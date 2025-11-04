@@ -4,9 +4,11 @@ let historyResults = [];
 let selectedIndex = 0;
 let currentSort = 'recent';
 let currentViewMode = 'large'; // 'compact', 'thumbnail', 'large'
+let currentDisplayMode = 'popup'; // 'popup', 'overlay'
 let previewCache = new Map();
 let intersectionObserver = null;
 let debugMode = false;
+const isOverlayContext = window.top !== window;
 
 const searchInput = document.getElementById('searchInput');
 const tabsList = document.getElementById('tabsList');
@@ -18,6 +20,35 @@ const viewThumbnailBtn = document.getElementById('viewThumbnail');
 const viewLargeBtn = document.getElementById('viewLarge');
 const copyAllBtn = document.getElementById('copyAllBtn');
 const closeAllBtn = document.getElementById('closeAllBtn');
+const displayModePopupBtn = document.getElementById('displayModePopup');
+const displayModeOverlayBtn = document.getElementById('displayModeOverlay');
+
+if (isOverlayContext && document.body) {
+  document.body.classList.add('overlay-mode');
+}
+
+function closeUI() {
+  if (isOverlayContext) {
+    window.parent.postMessage({ type: 'TAB_HERO_CLOSE' }, '*');
+  } else {
+    window.close();
+  }
+}
+
+window.addEventListener('message', (event) => {
+  try {
+    const extensionOrigin = chrome.runtime.getURL('').replace(/\/$/, '');
+    if (event.origin !== extensionOrigin) {
+      return;
+    }
+  } catch (error) {
+    return;
+  }
+
+  if (event.data && event.data.type === 'TAB_HERO_FOCUS_SEARCH') {
+    focusSearchInput();
+  }
+});
 
 // Copy all filtered tab URLs as markdown
 async function copyAllUrls() {
@@ -88,9 +119,42 @@ async function closeAllFilteredTabs() {
 async function init() {
   await loadTabs();
   setupIntersectionObserver();
+  const continueInit = await loadSavedDisplayMode();
+  if (!continueInit) {
+    return;
+  }
   await loadSavedSortMode();
   await loadSavedViewMode();
   setupEventListeners();
+  focusSearchInput();
+}
+
+// Load saved display mode and handle overlay fallback
+async function loadSavedDisplayMode() {
+  try {
+    const result = await chrome.storage.local.get(['displayMode']);
+    const savedMode = result.displayMode;
+    currentDisplayMode = savedMode === 'overlay' ? 'overlay' : 'popup';
+  } catch (error) {
+    console.log('Could not load display mode:', error);
+    currentDisplayMode = 'popup';
+  }
+
+  updateDisplayModeControls();
+
+  if (!isOverlayContext && currentDisplayMode === 'overlay') {
+    try {
+      const result = await chrome.runtime.sendMessage({ action: 'openOverlay' });
+      if (result && result.success) {
+        closeUI();
+        return false;
+      }
+    } catch (error) {
+      console.log('Could not open overlay:', error);
+    }
+  }
+
+  return true;
 }
 
 // Load saved view mode from storage
@@ -120,6 +184,51 @@ async function loadSavedSortMode() {
   } catch (error) {
     console.log('Could not load saved sort mode:', error);
     setSortMode('recent', { skipSave: true });
+  }
+}
+
+function updateDisplayModeControls() {
+  const isPopup = currentDisplayMode === 'popup';
+
+  if (displayModePopupBtn) {
+    displayModePopupBtn.classList.toggle('active', isPopup);
+    displayModePopupBtn.setAttribute('aria-pressed', isPopup ? 'true' : 'false');
+  }
+
+  if (displayModeOverlayBtn) {
+    displayModeOverlayBtn.classList.toggle('active', !isPopup);
+    displayModeOverlayBtn.setAttribute('aria-pressed', !isPopup ? 'true' : 'false');
+  }
+}
+
+async function setDisplayMode(mode) {
+  const nextMode = mode === 'overlay' ? 'overlay' : 'popup';
+
+  if (currentDisplayMode === nextMode) {
+    updateDisplayModeControls();
+    return;
+  }
+
+  currentDisplayMode = nextMode;
+  updateDisplayModeControls();
+
+  try {
+    await chrome.storage.local.set({ displayMode: currentDisplayMode });
+  } catch (error) {
+    console.error('Failed to save display mode:', error);
+  }
+
+  if (!isOverlayContext && currentDisplayMode === 'overlay') {
+    try {
+      const result = await chrome.runtime.sendMessage({ action: 'openOverlay' });
+      if (result && result.success) {
+        closeUI();
+      }
+    } catch (error) {
+      console.log('Could not open overlay:', error);
+    }
+  } else if (isOverlayContext && currentDisplayMode === 'popup') {
+    closeUI();
   }
 }
 
@@ -215,25 +324,52 @@ async function loadPreviewForTab(tabId, previewElement) {
 function showFavicon(tabId, previewElement) {
   const tab = allTabs.find(t => t.id === tabId);
   if (!tab) {
-    previewElement.innerHTML = '<div class="preview-placeholder">📄</div>';
+    if (currentViewMode === 'thumbnail') {
+      renderThumbnailFavicon(previewElement, null);
+    } else {
+      previewElement.innerHTML = '<div class="preview-placeholder">📄</div>';
+    }
     return;
   }
   
-  previewElement.innerHTML = '';
-  
-  if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
-    const favicon = document.createElement('img');
-    favicon.src = tab.favIconUrl;
-    favicon.className = 'favicon-fallback';
-    favicon.onerror = () => {
-      previewElement.innerHTML = '<div class="preview-placeholder">🌐</div>';
-    };
-    previewElement.appendChild(favicon);
+  if (currentViewMode === 'thumbnail') {
+    renderThumbnailFavicon(previewElement, tab);
   } else {
-    previewElement.innerHTML = '<div class="preview-placeholder">🌐</div>';
+    previewElement.innerHTML = '';
+    
+    if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
+      const favicon = document.createElement('img');
+      favicon.src = tab.favIconUrl;
+      favicon.className = 'favicon-fallback';
+      favicon.onerror = () => {
+        previewElement.innerHTML = '<div class="preview-placeholder">🌐</div>';
+      };
+      previewElement.appendChild(favicon);
+    } else {
+      previewElement.innerHTML = '<div class="preview-placeholder">🌐</div>';
+    }
   }
   
   previewCache.set(tabId, null);
+}
+
+function renderThumbnailFavicon(previewElement, tab) {
+  previewElement.innerHTML = '';
+
+  if (tab && tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
+    const img = document.createElement('img');
+    img.src = tab.favIconUrl;
+    img.alt = '';
+    img.className = 'thumbnail-favicon';
+    img.referrerPolicy = 'no-referrer';
+    img.onerror = () => {
+      img.remove();
+      previewElement.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
+    };
+    previewElement.appendChild(img);
+  } else {
+    previewElement.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
+  }
 }
 
 // Set view mode
@@ -342,6 +478,10 @@ function createTabElement(tab, index, isHistory) {
     preview.className = 'tab-preview';
     preview.innerHTML = '<div class="preview-loading">📄</div>';
     tabItem.appendChild(preview);
+
+    if (currentViewMode === 'thumbnail') {
+      renderThumbnailFavicon(preview, tab);
+    }
   }
   
   // Tab info
@@ -358,11 +498,58 @@ function createTabElement(tab, index, isHistory) {
   
   info.appendChild(title);
   info.appendChild(url);
+
+  if (currentViewMode === 'compact') {
+    const faviconWrapper = document.createElement('div');
+    faviconWrapper.className = 'tab-favicon';
+
+    if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
+      const faviconImg = document.createElement('img');
+      faviconImg.src = tab.favIconUrl;
+      faviconImg.alt = '';
+      faviconImg.referrerPolicy = 'no-referrer';
+      faviconImg.onerror = () => {
+        faviconWrapper.classList.add('fallback');
+        faviconWrapper.textContent = '🌐';
+        faviconImg.remove();
+      };
+      faviconWrapper.appendChild(faviconImg);
+    } else {
+      faviconWrapper.classList.add('fallback');
+      faviconWrapper.textContent = '🌐';
+    }
+
+    tabItem.appendChild(faviconWrapper);
+  }
+
   tabItem.appendChild(info);
-  
+
+  if (!tab.pinned) {
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'tab-close-button';
+    closeBtn.setAttribute('aria-label', 'Close tab');
+    closeBtn.title = 'Close tab';
+    closeBtn.textContent = '×';
+
+    const stop = (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+    };
+
+    closeBtn.addEventListener('mousedown', stop);
+    closeBtn.addEventListener('mouseup', stop);
+    closeBtn.addEventListener('click', async (event) => {
+      stop(event);
+      await closeTab(tab.id);
+    });
+
+    tabItem.appendChild(closeBtn);
+  }
+
   // Click handler
   tabItem.addEventListener('click', () => switchToTab(tab.id));
-  
+
   return tabItem;
 }
 
@@ -410,7 +597,7 @@ function createHistoryElement(historyItem, index) {
 // Open history item in new tab
 async function openHistoryItem(url) {
   await chrome.tabs.create({ url });
-  window.close();
+  closeUI();
 }
 
 // Filter tabs based on search
@@ -577,7 +764,7 @@ async function switchToTab(tabId) {
   await chrome.tabs.update(tabId, { active: true });
   const tab = await chrome.tabs.get(tabId);
   await chrome.windows.update(tab.windowId, { focused: true });
-  window.close();
+  closeUI();
 }
 
 // Close tab
@@ -663,6 +850,14 @@ function setupEventListeners() {
   viewCompactBtn.addEventListener('click', () => setViewMode('compact'));
   viewThumbnailBtn.addEventListener('click', () => setViewMode('thumbnail'));
   viewLargeBtn.addEventListener('click', () => setViewMode('large'));
+
+  if (displayModePopupBtn) {
+    displayModePopupBtn.addEventListener('click', () => setDisplayMode('popup'));
+  }
+
+  if (displayModeOverlayBtn) {
+    displayModeOverlayBtn.addEventListener('click', () => setDisplayMode('overlay'));
+  }
   
   // Keyboard navigation - single handler for all keys
   document.addEventListener('keydown', async (e) => {
@@ -743,10 +938,20 @@ async function handleKeyPress(e) {
       
     case 'Escape':
       e.preventDefault();
-      window.close();
+      closeUI();
       break;
   }
 }
 
 // Start the extension
 init();
+function focusSearchInput() {
+  if (document.activeElement === searchInput) {
+    return;
+  }
+
+  if (searchInput) {
+    searchInput.focus({ preventScroll: true });
+    searchInput.select();
+  }
+}

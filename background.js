@@ -5,11 +5,77 @@ const CAPTURE_DELAY = 2000; // 2 seconds between captures
 let lastCaptureTime = 0;
 let captureQueue = [];
 let isProcessingQueue = false;
+let displayMode = 'popup';
+
+initializeDisplayMode();
+
+async function initializeDisplayMode() {
+  try {
+    const result = await chrome.storage.local.get(['displayMode']);
+    const savedMode = result.displayMode;
+    displayMode = savedMode === 'overlay' ? 'overlay' : 'popup';
+  } catch (error) {
+    displayMode = 'popup';
+  }
+
+  updateActionPresentation();
+}
+
+function updateActionPresentation() {
+  if (displayMode === 'overlay') {
+    chrome.action.setPopup({ popup: '' });
+  } else {
+    chrome.action.setPopup({ popup: 'popup.html' });
+  }
+}
+
+async function toggleOverlay(targetTabId) {
+  try {
+    let tabId = targetTabId;
+
+    if (!tabId) {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      tabId = activeTab?.id;
+    }
+
+    if (!tabId) {
+      return { success: false, error: 'NO_ACTIVE_TAB' };
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['overlay.js']
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error('Tab Hero overlay injection failed:', error);
+    return { success: false, error: error.message };
+  }
+}
 
 // Listen for the keyboard command
 chrome.commands.onCommand.addListener((command) => {
   if (command === "open-tab-manager") {
-    chrome.action.openPopup();
+    if (displayMode === 'overlay') {
+      toggleOverlay();
+    } else {
+      chrome.action.openPopup();
+    }
+  }
+});
+
+chrome.action.onClicked.addListener((tab) => {
+  if (displayMode === 'overlay') {
+    toggleOverlay(tab?.id);
+  }
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.displayMode) {
+    const newMode = changes.displayMode.newValue;
+    displayMode = newMode === 'overlay' ? 'overlay' : 'popup';
+    updateActionPresentation();
   }
 });
 
@@ -108,6 +174,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     }
     return true; // Keep channel open for async response
+  }
+
+  if (request.action === 'openOverlay') {
+    toggleOverlay().then((result) => {
+      sendResponse(result);
+    }).catch((error) => {
+      sendResponse({ success: false, error: error.message });
+    });
+    return true;
   }
 });
 

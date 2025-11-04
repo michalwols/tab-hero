@@ -18,6 +18,19 @@ body {
   height: 600px;
 }
 
+body.overlay-mode {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+body.overlay-mode .container {
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: none;
+}
+
 .container {
   display: flex;
   flex-direction: column;
@@ -127,7 +140,7 @@ body {
   display: flex;
   flex-direction: row;
   align-items: center;
-  padding: 6px 8px;
+  padding: 6px 36px 6px 8px;
   margin-bottom: 1px;
   background: transparent;
   border: none;
@@ -159,6 +172,32 @@ body {
   overflow: hidden;
 }
 
+.tabs-list.view-compact .tab-favicon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 10px;
+  flex-shrink: 0;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.tabs-list.view-compact .tab-favicon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.tabs-list.view-compact .tab-favicon.fallback {
+  background: transparent;
+  font-size: 16px;
+  opacity: 0.65;
+}
+
 .tabs-list.view-compact .tab-title {
   font-size: 13px;
   font-weight: 500;
@@ -186,7 +225,7 @@ body {
   display: flex;
   flex-direction: row;
   align-items: center;
-  padding: 6px 8px;
+  padding: 6px 44px 6px 8px;
   margin-bottom: 2px;
   background: transparent;
   border: none;
@@ -224,6 +263,20 @@ body {
   object-position: top;
 }
 
+.tabs-list.view-thumbnail .thumbnail-favicon {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+}
+
+.tabs-list.view-thumbnail .thumbnail-favicon-placeholder {
+  font-size: 24px;
+  opacity: 0.7;
+  text-align: center;
+}
+
 .tabs-list.view-thumbnail .tab-info {
   flex: 1;
   min-width: 0;
@@ -255,6 +308,10 @@ body {
   cursor: pointer;
   transition: all 0.15s;
   overflow: hidden;
+  position: relative;
+}
+
+.tab-item {
   position: relative;
 }
 
@@ -355,12 +412,18 @@ body {
 
 .footer {
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid #e5e7eb;
   background: #ffffff;
   flex-shrink: 0;
+}
+
+.footer-actions {
+  display: flex;
   flex-wrap: wrap;
+  gap: 4px;
 }
 
 .footer-btn {
@@ -399,6 +462,95 @@ body {
 .footer-btn.danger-btn:hover {
   background: #fef2f2;
   color: #dc2626;
+}
+
+.display-mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.display-mode-label {
+  font-weight: 500;
+}
+
+.display-mode-buttons {
+  display: inline-flex;
+  background: #f3f4f6;
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.tab-close-button {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
+  pointer-events: none;
+  z-index: 2;
+  translate: 0 -50%;
+}
+
+.tab-item:hover .tab-close-button,
+.tab-close-button:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.tab-close-button:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.tabs-list.view-large .tab-close-button {
+  background: rgba(15, 23, 42, 0.65);
+  color: #f8fafc;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.35);
+}
+
+.display-mode-btn {
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.display-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.8);
+  color: #374151;
+}
+
+.display-mode-btn.active {
+  background: #ffffff;
+  color: #1f2937;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
 }
 
 .help-text {
