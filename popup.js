@@ -24,6 +24,7 @@ const viewCompactBtn = document.getElementById('viewCompact');
 const viewThumbnailBtn = document.getElementById('viewThumbnail');
 const viewLargeBtn = document.getElementById('viewLarge');
 const copyAllBtn = document.getElementById('copyAllBtn');
+const moveAllBtn = document.getElementById('moveAllBtn');
 const closeAllBtn = document.getElementById('closeAllBtn');
 const displayModePopupBtn = document.getElementById('displayModePopup');
 const displayModeOverlayBtn = document.getElementById('displayModeOverlay');
@@ -117,6 +118,37 @@ async function closeAllFilteredTabs() {
     await filterTabs();
   } catch (error) {
     console.error('Failed to close tabs:', error);
+  }
+}
+
+async function moveAllFilteredTabs() {
+  const movableTabs = filteredTabs.filter(tab => !tab.pinned);
+
+  if (movableTabs.length === 0) {
+    console.log('No tabs to move');
+    return;
+  }
+
+  const [firstTab, ...remainingTabs] = movableTabs;
+
+  try {
+    const newWindow = await chrome.windows.create({ tabId: firstTab.id });
+
+    if (newWindow && remainingTabs.length > 0) {
+      await chrome.tabs.move(remainingTabs.map(tab => tab.id), {
+        windowId: newWindow.id,
+        index: -1
+      });
+    }
+
+    if (newWindow) {
+      await chrome.windows.update(newWindow.id, { focused: true });
+    }
+
+    await loadTabs();
+    await filterTabs();
+  } catch (error) {
+    console.error('Failed to move tabs:', error);
   }
 }
 
@@ -1045,6 +1077,7 @@ function setupEventListeners() {
   
   // Action buttons
   copyAllBtn.addEventListener('click', copyAllUrls);
+  moveAllBtn.addEventListener('click', moveAllFilteredTabs);
   closeAllBtn.addEventListener('click', closeAllFilteredTabs);
 }
 
