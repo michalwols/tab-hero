@@ -29,6 +29,8 @@
       backdrop-filter: blur(3px);
       transition: opacity 0.2s ease;
       opacity: 0;
+      padding: 48px 40px;
+      box-sizing: border-box;
     }
 
     #${overlayId}.visible {
@@ -37,12 +39,12 @@
 
     #${overlayId} .tab-hero-overlay-shell {
       position: relative;
-      width: min(720px, calc(100vw - 80px));
-      height: min(560px, calc(100vh - 120px));
-      max-height: calc(100vh - 120px);
+      width: min(900px, calc(100vw - 80px));
+      height: min(calc(100vh - 96px), max(640px, calc(100vh * 0.66)));
+      max-height: calc(100vh - 96px);
       display: flex;
       box-shadow: 0 20px 60px rgba(15, 23, 42, 0.35);
-      border-radius: 14px;
+      border-radius: 18px;
       overflow: hidden;
       background: #0f172a;
     }

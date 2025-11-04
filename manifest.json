@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Tab Manager",
+  "name": "TabHero",
   "version": "1.0",
   "description": "Manage your tabs with a quick command palette",
   "permissions": [

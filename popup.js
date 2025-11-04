@@ -7,8 +7,13 @@ let currentViewMode = 'large'; // 'compact', 'thumbnail', 'large'
 let currentDisplayMode = 'popup'; // 'popup', 'overlay'
 let previewCache = new Map();
 let intersectionObserver = null;
+let tabsResizeObserver = null;
+let hasWindowResizeListener = false;
+let pendingSizingFrame = null;
 let debugMode = false;
 const isOverlayContext = window.top !== window;
+const LARGE_PREVIEW_ASPECT_RATIO = 9 / 16;
+const LARGE_PREVIEW_MIN_HEIGHT = 200;
 
 const searchInput = document.getElementById('searchInput');
 const tabsList = document.getElementById('tabsList');
@@ -81,7 +86,7 @@ async function copyAllUrls() {
     console.error('Failed to copy:', error);
     copyAllBtn.textContent = '✗ Failed';
     setTimeout(() => {
-      copyAllBtn.textContent = 'Copy All URLs';
+      copyAllBtn.textContent = 'Copy';
     }, 2000);
   }
 }
@@ -119,6 +124,7 @@ async function closeAllFilteredTabs() {
 async function init() {
   await loadTabs();
   setupIntersectionObserver();
+  setupResizeHandling();
   const continueInit = await loadSavedDisplayMode();
   if (!continueInit) {
     return;
@@ -259,10 +265,120 @@ function setupIntersectionObserver() {
   });
 }
 
+function setupResizeHandling() {
+  if (!tabsList) {
+    return;
+  }
+
+  if (!hasWindowResizeListener) {
+    window.addEventListener('resize', updateLargePreviewSizing);
+    hasWindowResizeListener = true;
+  }
+
+  if (typeof ResizeObserver !== 'undefined') {
+    if (tabsResizeObserver) {
+      tabsResizeObserver.disconnect();
+    }
+
+    tabsResizeObserver = new ResizeObserver(() => {
+      updateLargePreviewSizing();
+    });
+
+    tabsResizeObserver.observe(tabsList);
+  }
+}
+
+function ensurePreviewContent(previewElement) {
+  if (!previewElement) return null;
+
+  let content = previewElement.querySelector('.tab-preview-content');
+  if (content) {
+    return content;
+  }
+
+  content = document.createElement('div');
+  content.className = 'tab-preview-content';
+
+  while (previewElement.firstChild) {
+    content.appendChild(previewElement.firstChild);
+  }
+
+  previewElement.appendChild(content);
+  return content;
+}
+
+function clearLargePreviewSizing() {
+  const previews = tabsList.querySelectorAll('.tab-preview');
+  previews.forEach(preview => {
+    preview.style.removeProperty('height');
+    preview.style.removeProperty('min-height');
+    const tabItem = preview.closest('.tab-item');
+    if (tabItem) {
+      tabItem.style.removeProperty('min-height');
+    }
+  });
+}
+
+function queueLargePreviewSizing() {
+  if (currentViewMode !== 'large') {
+    return;
+  }
+
+  if (pendingSizingFrame !== null) {
+    cancelAnimationFrame(pendingSizingFrame);
+  }
+
+  pendingSizingFrame = requestAnimationFrame(() => {
+    pendingSizingFrame = requestAnimationFrame(() => {
+      updateLargePreviewSizing();
+      pendingSizingFrame = null;
+    });
+  });
+}
+
+function updateLargePreviewSizing() {
+  if (currentViewMode !== 'large') {
+    return;
+  }
+
+  const previews = tabsList.querySelectorAll('.tab-preview');
+
+  previews.forEach(preview => {
+    let width = preview.getBoundingClientRect().width;
+
+    if (!width) {
+      const tabItem = preview.closest('.tab-item');
+      if (tabItem) {
+        width = tabItem.getBoundingClientRect().width;
+      }
+    }
+
+    if (!width) {
+      width = tabsList.getBoundingClientRect().width;
+    }
+
+    if (!width) {
+      return;
+    }
+
+    const height = Math.max(LARGE_PREVIEW_MIN_HEIGHT, Math.round(width * LARGE_PREVIEW_ASPECT_RATIO));
+    preview.style.height = `${height}px`;
+    preview.style.minHeight = `${height}px`;
+
+    const tabItem = preview.closest('.tab-item');
+    if (tabItem) {
+      tabItem.style.minHeight = `${height}px`;
+    }
+  });
+}
+
 // Load preview for a specific tab
 async function loadPreviewForTab(tabId, previewElement) {
   if (previewElement.dataset.loaded === 'true') return;
   previewElement.dataset.loaded = 'true';
+
+  const previewContent = ensurePreviewContent(previewElement);
+  if (!previewContent) return;
   
   const debugInfo = debugMode ? document.createElement('div') : null;
   if (debugInfo) {
@@ -277,8 +393,8 @@ async function loadPreviewForTab(tabId, previewElement) {
       if (debugInfo) debugInfo.textContent = '✓ Memory Cache';
       const img = document.createElement('img');
       img.src = cachedPreview;
-      previewElement.innerHTML = '';
-      previewElement.appendChild(img);
+      previewContent.innerHTML = '';
+      previewContent.appendChild(img);
       if (debugInfo) previewElement.appendChild(debugInfo);
       return;
     } else {
@@ -302,8 +418,8 @@ async function loadPreviewForTab(tabId, previewElement) {
       previewCache.set(tabId, response.screenshot);
       const img = document.createElement('img');
       img.src = response.screenshot;
-      previewElement.innerHTML = '';
-      previewElement.appendChild(img);
+      previewContent.innerHTML = '';
+      previewContent.appendChild(img);
       if (debugInfo) previewElement.appendChild(debugInfo);
       return;
     } else {
@@ -318,43 +434,52 @@ async function loadPreviewForTab(tabId, previewElement) {
   if (debugInfo) debugInfo.textContent = '→ Favicon fallback';
   showFavicon(tabId, previewElement);
   if (debugInfo) previewElement.appendChild(debugInfo);
+  queueLargePreviewSizing();
 }
 
 // Show favicon as fallback
 function showFavicon(tabId, previewElement) {
   const tab = allTabs.find(t => t.id === tabId);
+  const previewContent = ensurePreviewContent(previewElement);
+  if (!previewContent) return;
+
   if (!tab) {
     if (currentViewMode === 'thumbnail') {
       renderThumbnailFavicon(previewElement, null);
     } else {
-      previewElement.innerHTML = '<div class="preview-placeholder">📄</div>';
+      previewContent.innerHTML = '<div class="preview-placeholder">📄</div>';
     }
+    queueLargePreviewSizing();
     return;
   }
   
   if (currentViewMode === 'thumbnail') {
     renderThumbnailFavicon(previewElement, tab);
   } else {
-    previewElement.innerHTML = '';
+    previewContent.innerHTML = '';
     
     if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
       const favicon = document.createElement('img');
       favicon.src = tab.favIconUrl;
       favicon.className = 'favicon-fallback';
       favicon.onerror = () => {
-        previewElement.innerHTML = '<div class="preview-placeholder">🌐</div>';
+        previewContent.innerHTML = '<div class="preview-placeholder">🌐</div>';
       };
-      previewElement.appendChild(favicon);
+      previewContent.appendChild(favicon);
     } else {
-      previewElement.innerHTML = '<div class="preview-placeholder">🌐</div>';
+      previewContent.innerHTML = '<div class="preview-placeholder">🌐</div>';
     }
   }
   
   previewCache.set(tabId, null);
+  queueLargePreviewSizing();
 }
 
 function renderThumbnailFavicon(previewElement, tab) {
-  previewElement.innerHTML = '';
+  const previewContent = ensurePreviewContent(previewElement);
+  if (!previewContent) return;
+
+  previewContent.innerHTML = '';
 
   if (tab && tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
     const img = document.createElement('img');
@@ -364,12 +489,13 @@ function renderThumbnailFavicon(previewElement, tab) {
     img.referrerPolicy = 'no-referrer';
     img.onerror = () => {
       img.remove();
-      previewElement.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
+      previewContent.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
     };
-    previewElement.appendChild(img);
+    previewContent.appendChild(img);
   } else {
-    previewElement.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
+    previewContent.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
   }
+  queueLargePreviewSizing();
 }
 
 // Set view mode
@@ -391,14 +517,17 @@ function setViewMode(mode) {
     case 'compact':
       viewCompactBtn.classList.add('active');
       tabsList.classList.add('view-compact');
+      clearLargePreviewSizing();
       break;
     case 'thumbnail':
       viewThumbnailBtn.classList.add('active');
       tabsList.classList.add('view-thumbnail');
+      clearLargePreviewSizing();
       break;
     case 'large':
       viewLargeBtn.classList.add('active');
       tabsList.classList.add('view-large');
+      queueLargePreviewSizing();
       break;
   }
   
@@ -406,7 +535,12 @@ function setViewMode(mode) {
 }
 
 // Render tabs list
-async function renderTabs() {
+async function renderTabs(options = {}) {
+  const {
+    preserveScroll = false,
+    targetScrollTop = null,
+    suppressAutoScroll = false
+  } = options;
   // Disconnect observer before clearing
   if (intersectionObserver) {
     intersectionObserver.disconnect();
@@ -457,8 +591,19 @@ async function renderTabs() {
   // Clear and append all at once
   tabsList.innerHTML = '';
   tabsList.appendChild(fragment);
+
+  if (preserveScroll && targetScrollTop !== null) {
+    const maxScroll = Math.max(0, tabsList.scrollHeight - tabsList.clientHeight);
+    tabsList.scrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
+  }
   
-  scrollToSelected();
+  if (!suppressAutoScroll) {
+    scrollToSelected();
+  }
+
+  if (currentViewMode === 'large') {
+    queueLargePreviewSizing();
+  }
 }
 
 // Create a tab element
@@ -476,7 +621,10 @@ function createTabElement(tab, index, isHistory) {
   if (currentViewMode !== 'compact') {
     const preview = document.createElement('div');
     preview.className = 'tab-preview';
-    preview.innerHTML = '<div class="preview-loading">📄</div>';
+    const previewContent = document.createElement('div');
+    previewContent.className = 'tab-preview-content';
+    previewContent.innerHTML = '<div class="preview-loading">📄</div>';
+    preview.appendChild(previewContent);
     tabItem.appendChild(preview);
 
     if (currentViewMode === 'thumbnail') {
@@ -541,6 +689,10 @@ function createTabElement(tab, index, isHistory) {
     closeBtn.addEventListener('mouseup', stop);
     closeBtn.addEventListener('click', async (event) => {
       stop(event);
+      const clickedIndex = parseInt(tabItem.dataset.index, 10);
+      if (!Number.isNaN(clickedIndex)) {
+        selectedIndex = clickedIndex;
+      }
       await closeTab(tab.id);
     });
 
@@ -568,7 +720,10 @@ function createHistoryElement(historyItem, index) {
   if (currentViewMode !== 'compact') {
     const preview = document.createElement('div');
     preview.className = 'tab-preview';
-    preview.innerHTML = '<div class="preview-placeholder">🕒</div>';
+    const previewContent = document.createElement('div');
+    previewContent.className = 'tab-preview-content';
+    previewContent.innerHTML = '<div class="preview-placeholder">🕒</div>';
+    preview.appendChild(previewContent);
     item.appendChild(preview);
   }
   
@@ -668,21 +823,25 @@ function setSortMode(mode, options = {}) {
   if (!skipSave) {
     chrome.storage.local.set({ sortMode: mode });
   }
-
-  [sortByUrlBtn, sortByTitleBtn, sortByRecentBtn].forEach(btn =>
-    btn.classList.remove('active')
-  );
+  
+  [sortByUrlBtn, sortByTitleBtn, sortByRecentBtn].forEach(btn => {
+    btn.classList.remove('active');
+    btn.setAttribute('aria-pressed', 'false');
+  });
 
   switch (mode) {
     case 'url':
       sortByUrlBtn.classList.add('active');
+      sortByUrlBtn.setAttribute('aria-pressed', 'true');
       break;
     case 'title':
       sortByTitleBtn.classList.add('active');
+      sortByTitleBtn.setAttribute('aria-pressed', 'true');
       break;
     case 'recent':
     default:
       sortByRecentBtn.classList.add('active');
+      sortByRecentBtn.setAttribute('aria-pressed', 'true');
       break;
   }
 
@@ -771,6 +930,7 @@ async function switchToTab(tabId) {
 async function closeTab(tabId) {
   // Store the current selection index before closing
   const currentIndex = selectedIndex;
+  const previousScrollTop = tabsList.scrollTop;
   
   await chrome.tabs.remove(tabId);
   await loadTabs();
@@ -813,7 +973,11 @@ async function closeTab(tabId) {
     selectedIndex = currentIndex;
   }
   
-  renderTabs();
+  renderTabs({
+    preserveScroll: true,
+    targetScrollTop: previousScrollTop,
+    suppressAutoScroll: true
+  });
 }
 
 // Apply the current sort order to filteredTabs

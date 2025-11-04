@@ -29,18 +29,19 @@
     </div>
     
     <div class="footer">
-      <div class="footer-actions">
-        <button id="copyAllBtn" class="footer-btn action-btn" title="Copy all filtered tabs as markdown">Copy All URLs</button>
-        <button id="closeAllBtn" class="footer-btn action-btn danger-btn" title="Close all filtered tabs">Close All</button>
-        <button id="sortByUrl" class="footer-btn">Sort by URL</button>
-        <button id="sortByTitle" class="footer-btn">Sort by Title</button>
-        <button id="sortByRecent" class="footer-btn active">Most Recent</button>
+      <div class="footer-left">
+        <button id="copyAllBtn" class="footer-btn action-btn" title="Copy all filtered tabs as markdown">Copy</button>
+        <button id="closeAllBtn" class="footer-btn action-btn danger-btn" title="Close all filtered tabs">Close</button>
       </div>
-      <div class="display-mode-toggle" title="Choose where Tab Hero appears">
-        <span class="display-mode-label">Display</span>
-        <div class="display-mode-buttons">
-          <button id="displayModePopup" class="display-mode-btn" type="button">Toolbar</button>
-          <button id="displayModeOverlay" class="display-mode-btn" type="button">Center</button>
+      <div class="footer-right">
+        <div class="toggle-group" title="Change sort order">
+          <button id="sortByUrl" class="toggle-btn" type="button">URL</button>
+          <button id="sortByTitle" class="toggle-btn" type="button">Title</button>
+          <button id="sortByRecent" class="toggle-btn active" type="button">Time</button>
+        </div>
+        <div class="toggle-group" title="Choose where Tab Hero appears">
+          <button id="displayModePopup" class="toggle-btn" type="button">Toolbar</button>
+          <button id="displayModeOverlay" class="toggle-btn" type="button">Center</button>
         </div>
       </div>
     </div>
