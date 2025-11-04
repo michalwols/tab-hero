@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tab Manager</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="search-box">
+        <input 
+          type="text" 
+          id="searchInput" 
+          placeholder="Search tabs..." 
+          autofocus
+        >
+      </div>
+      <div class="view-mode-toggle">
+        <button id="viewCompact" class="view-btn" title="Compact List">☰</button>
+        <button id="viewThumbnail" class="view-btn" title="Thumbnail List">⊞</button>
+        <button id="viewLarge" class="view-btn active" title="Large Preview">▦</button>
+      </div>
+    </div>
+    
+    <div class="tabs-list view-large" id="tabsList">
+      <!-- Tabs will be dynamically inserted here -->
+    </div>
+    
+    <div class="footer">
+      <button id="copyAllBtn" class="footer-btn action-btn" title="Copy all filtered tabs as markdown">Copy All URLs</button>
+      <button id="closeAllBtn" class="footer-btn action-btn danger-btn" title="Close all filtered tabs">Close All</button>
+      <button id="sortByUrl" class="footer-btn">Sort by URL</button>
+      <button id="sortByTitle" class="footer-btn">Sort by Title</button>
+      <button id="sortByRecent" class="footer-btn active">Most Recent</button>
+    </div>
+    
+    <div class="help-text">
+      <kbd>↑</kbd><kbd>↓</kbd> Navigate • <kbd>←</kbd> Close • <kbd>→</kbd> Switch • <kbd>Enter</kbd> Switch • <kbd>Ctrl+D</kbd> Debug
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
