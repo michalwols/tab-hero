@@ -11,6 +11,8 @@ let tabsResizeObserver = null;
 let hasWindowResizeListener = false;
 let pendingSizingFrame = null;
 let debugMode = false;
+let historyRange = '7';
+const HISTORY_RANGE_OPTIONS = ['7', '30', 'all'];
 const isOverlayContext = window.top !== window;
 const LARGE_PREVIEW_ASPECT_RATIO = 9 / 16;
 const LARGE_PREVIEW_MIN_HEIGHT = 200;
@@ -28,6 +30,7 @@ const moveAllBtn = document.getElementById('moveAllBtn');
 const closeAllBtn = document.getElementById('closeAllBtn');
 const displayModePopupBtn = document.getElementById('displayModePopup');
 const displayModeOverlayBtn = document.getElementById('displayModeOverlay');
+const historyRangeButtons = Array.from(document.querySelectorAll('.history-range-btn'));
 
 if (isOverlayContext && document.body) {
   document.body.classList.add('overlay-mode');
@@ -163,6 +166,7 @@ async function init() {
   }
   await loadSavedSortMode();
   await loadSavedViewMode();
+  await loadSavedHistoryRange();
   setupEventListeners();
   focusSearchInput();
 }
@@ -206,6 +210,22 @@ async function loadSavedViewMode() {
   } catch (error) {
     console.log('Could not load saved view mode:', error);
   }
+}
+
+// Load saved history range from storage
+async function loadSavedHistoryRange() {
+  try {
+    const result = await chrome.storage.local.get(['historyRange']);
+    const savedRange = result.historyRange;
+    if (HISTORY_RANGE_OPTIONS.includes(savedRange)) {
+      setHistoryRange(savedRange, { skipSave: true, skipFilter: true });
+      return;
+    }
+  } catch (error) {
+    console.log('Could not load history range:', error);
+  }
+
+  setHistoryRange('7', { skipSave: true, skipFilter: true });
 }
 
 // Load saved sort mode from storage
@@ -273,7 +293,79 @@ async function setDisplayMode(mode) {
 // Load all tabs
 async function loadTabs() {
   allTabs = await chrome.tabs.query({});
+  await hydrateTabMetadata(allTabs);
   filteredTabs = [...allTabs];
+}
+
+async function hydrateTabMetadata(tabs) {
+  if (!Array.isArray(tabs) || tabs.length === 0) {
+    return;
+  }
+
+  const tabIds = tabs
+    .map((tab) => tab?.id)
+    .filter((id) => typeof id === 'number');
+
+  if (tabIds.length === 0) {
+    return;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'getCachedMetadata',
+      tabIds
+    });
+
+    const metadata = response?.metadata;
+    if (!metadata) {
+      return;
+    }
+
+    const metadataMap = new Map();
+    Object.entries(metadata).forEach(([key, value]) => {
+      const numericId = Number(key);
+      if (!Number.isNaN(numericId)) {
+        metadataMap.set(numericId, value);
+      }
+    });
+
+    tabs.forEach((tab) => {
+      const data = metadataMap.get(tab.id);
+      if (data?.title && shouldUseCachedTitle(tab, data.title)) {
+        tab.title = data.title;
+        tab._tabHeroTitleFromCache = true;
+      }
+    });
+  } catch (error) {
+    console.log('Could not hydrate tab metadata:', error);
+  }
+}
+
+function shouldUseCachedTitle(tab, cachedTitle) {
+  if (typeof cachedTitle !== 'string') {
+    return false;
+  }
+
+  const trimmedCachedTitle = cachedTitle.trim();
+  if (!trimmedCachedTitle) {
+    return false;
+  }
+
+  const currentTitle = (tab.title || '').trim();
+
+  if (tab.discarded) {
+    return true;
+  }
+
+  if (!currentTitle) {
+    return true;
+  }
+
+  if (currentTitle === tab.url) {
+    return true;
+  }
+
+  return false;
 }
 
 // Setup Intersection Observer for lazy loading
@@ -672,12 +764,24 @@ function createTabElement(tab, index, isHistory) {
   title.className = 'tab-title';
   title.textContent = tab.title || 'Untitled';
   
+  const urlRow = document.createElement('div');
+  urlRow.className = 'tab-url-row';
+  
   const url = document.createElement('div');
   url.className = 'tab-url';
   url.textContent = tab.url || '';
+  urlRow.appendChild(url);
+
+  const lastSeenText = formatRelativeTime(getTabLastActiveTime(tab));
+  if (lastSeenText) {
+    const lastSeen = document.createElement('div');
+    lastSeen.className = 'tab-last-visited';
+    lastSeen.textContent = lastSeenText;
+    urlRow.appendChild(lastSeen);
+  }
   
   info.appendChild(title);
-  info.appendChild(url);
+  info.appendChild(urlRow);
 
   if (currentViewMode === 'compact') {
     const faviconWrapper = document.createElement('div');
@@ -767,12 +871,24 @@ function createHistoryElement(historyItem, index) {
   title.className = 'tab-title';
   title.textContent = historyItem.title || 'Untitled';
   
+  const urlRow = document.createElement('div');
+  urlRow.className = 'tab-url-row';
+  
   const url = document.createElement('div');
   url.className = 'tab-url';
   url.textContent = historyItem.url || '';
+  urlRow.appendChild(url);
+
+  const lastSeenText = formatRelativeTime(historyItem.lastVisitTime);
+  if (lastSeenText) {
+    const lastSeen = document.createElement('div');
+    lastSeen.className = 'tab-last-visited';
+    lastSeen.textContent = lastSeenText;
+    urlRow.appendChild(lastSeen);
+  }
   
   info.appendChild(title);
-  info.appendChild(url);
+  info.appendChild(urlRow);
   item.appendChild(info);
   
   // Click handler - open in new tab
@@ -808,12 +924,8 @@ async function filterTabs() {
       return keywords.every(keyword => combined.includes(keyword));
     });
     
-    // Search history if few results
-    if (filteredTabs.length < 3) {
-      await searchHistory(query);
-    } else {
-      historyResults = [];
-    }
+    // Always search history to surface matches even when many tabs match
+    await searchHistory(query);
   }
   
   selectedIndex = 0;
@@ -825,17 +937,25 @@ async function filterTabs() {
 // Search browser history
 async function searchHistory(query) {
   try {
-    const results = await chrome.history.search({
+    const searchOptions = {
       text: query,
-      maxResults: 10,
-      startTime: Date.now() - (7 * 24 * 60 * 60 * 1000) // Last 7 days
-    });
+      maxResults: historyRange === 'all' ? 100 : 20
+    };
+    
+    const windowMs = getHistoryWindowMs(historyRange);
+    if (windowMs !== null) {
+      searchOptions.startTime = Date.now() - windowMs;
+    } else if (historyRange === 'all') {
+      searchOptions.startTime = 0; // Include full history
+    }
+
+    const results = await chrome.history.search(searchOptions);
     
     // Filter out URLs that are already in open tabs
     const openUrls = new Set(allTabs.map(t => t.url));
     historyResults = results
       .filter(item => !openUrls.has(item.url))
-      .slice(0, 5);
+      .slice(0, 100);
   } catch (error) {
     console.error('History search failed:', error);
     historyResults = [];
@@ -1074,6 +1194,13 @@ function setupEventListeners() {
   sortByUrlBtn.addEventListener('click', () => setSortMode('url'));
   sortByTitleBtn.addEventListener('click', () => setSortMode('title'));
   sortByRecentBtn.addEventListener('click', () => setSortMode('recent'));
+
+  historyRangeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const range = btn.dataset.range;
+      setHistoryRange(range);
+    });
+  });
   
   // Action buttons
   copyAllBtn.addEventListener('click', copyAllUrls);
@@ -1151,4 +1278,102 @@ function focusSearchInput() {
     searchInput.focus({ preventScroll: true });
     searchInput.select();
   }
+}
+
+function setHistoryRange(range, options = {}) {
+  const { skipSave = false, skipFilter = false } = options;
+  if (!HISTORY_RANGE_OPTIONS.includes(range)) {
+    range = '7';
+  }
+
+  historyRange = range;
+
+  historyRangeButtons.forEach((btn) => {
+    const isActive = btn.dataset.range === range;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
+  });
+
+  if (!skipSave) {
+    chrome.storage.local.set({ historyRange: range });
+  }
+
+  if (!skipFilter && searchInput.value.trim()) {
+    filterTabs();
+  }
+}
+
+function getHistoryWindowMs(range) {
+  switch (range) {
+    case '30':
+      return 30 * 24 * 60 * 60 * 1000;
+    case '7':
+      return 7 * 24 * 60 * 60 * 1000;
+    case 'all':
+    default:
+      return null;
+  }
+}
+
+function getTabLastActiveTime(tab) {
+  if (!tab || typeof tab !== 'object') {
+    return null;
+  }
+
+  if (typeof tab.lastAccessed === 'number') {
+    return tab.lastAccessed;
+  }
+
+  if (typeof tab.lastModified === 'number') {
+    return tab.lastModified;
+  }
+
+  if (typeof tab.lastUpdated === 'number') {
+    return tab.lastUpdated;
+  }
+
+  return null;
+}
+
+function formatRelativeTime(timestamp) {
+  if (typeof timestamp !== 'number' || Number.isNaN(timestamp) || timestamp <= 0) {
+    return '';
+  }
+
+  const diffMs = Date.now() - timestamp;
+  if (!Number.isFinite(diffMs) || diffMs < 0) {
+    return '';
+  }
+
+  const diffSeconds = Math.floor(diffMs / 1000);
+  if (diffSeconds < 30) {
+    return 'just now';
+  }
+
+  if (diffSeconds < 60) {
+    return `${diffSeconds}s ago`;
+  }
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 30) {
+    return `${diffDays}d ago`;
+  }
+
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) {
+    return `${diffMonths}mo ago`;
+  }
+
+  const diffYears = Math.floor(diffMonths / 12);
+  return `${diffYears}y ago`;
 }

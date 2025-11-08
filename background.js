@@ -2,12 +2,15 @@
 const screenshotCache = new Map();
 const MAX_CACHE_SIZE = 100;
 const CAPTURE_DELAY = 2000; // 2 seconds between captures
+const TITLE_CACHE_STORAGE_KEY = 'tabHeroTitleCache';
 let lastCaptureTime = 0;
 let captureQueue = [];
 let isProcessingQueue = false;
 let displayMode = 'popup';
+const titleCache = new Map();
 
 initializeDisplayMode();
+initializeTitleCache();
 
 async function initializeDisplayMode() {
   try {
@@ -26,6 +29,78 @@ function updateActionPresentation() {
     chrome.action.setPopup({ popup: '' });
   } else {
     chrome.action.setPopup({ popup: 'popup.html' });
+  }
+}
+
+async function initializeTitleCache() {
+  try {
+    const stored = await chrome.storage.local.get(TITLE_CACHE_STORAGE_KEY);
+    const cached = stored[TITLE_CACHE_STORAGE_KEY];
+    if (cached && typeof cached === 'object') {
+      Object.entries(cached).forEach(([key, value]) => {
+        const id = Number(key);
+        if (!Number.isNaN(id) && typeof value === 'string' && value.trim().length > 0) {
+          titleCache.set(id, value);
+        }
+      });
+    }
+  } catch (error) {
+    // Ignore cache initialization failures
+  }
+
+  try {
+    const tabs = await chrome.tabs.query({});
+    let mutated = false;
+    tabs.forEach((tab) => {
+      if (tab?.id !== undefined && typeof tab.title === 'string') {
+        const trimmed = tab.title.trim();
+        if (trimmed.length > 0 && titleCache.get(tab.id) !== trimmed) {
+          titleCache.set(tab.id, trimmed);
+          mutated = true;
+        }
+      }
+    });
+
+    if (mutated) {
+      persistTitleCache();
+    }
+  } catch (error) {
+    // Ignore initial tab query failures
+  }
+}
+
+function cacheTabTitle(tabId, title) {
+  if (typeof title !== 'string') return;
+  const trimmed = title.trim();
+  if (!trimmed) return;
+
+  const previous = titleCache.get(tabId);
+  if (previous === trimmed) {
+    return;
+  }
+
+  titleCache.set(tabId, trimmed);
+  persistTitleCache();
+}
+
+function removeCachedTitle(tabId) {
+  if (titleCache.delete(tabId)) {
+    persistTitleCache();
+  }
+}
+
+function persistTitleCache() {
+  const payload = {};
+  titleCache.forEach((value, key) => {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      payload[key] = value;
+    }
+  });
+
+  if (Object.keys(payload).length === 0) {
+    chrome.storage.local.remove(TITLE_CACHE_STORAGE_KEY).catch(() => {});
+  } else {
+    chrome.storage.local.set({ [TITLE_CACHE_STORAGE_KEY]: payload }).catch(() => {});
   }
 }
 
@@ -82,12 +157,33 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 // Capture screenshot when tab becomes active or is updated
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   queueCapture(activeInfo.tabId);
+
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    if (tab?.title) {
+      cacheTabTitle(activeInfo.tabId, tab.title);
+    }
+  } catch (error) {
+    // Ignore tab lookup failures
+  }
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // Capture when page finishes loading
-  if (changeInfo.status === 'complete' && tab.active) {
+  if (typeof changeInfo.title === 'string') {
+    cacheTabTitle(tabId, changeInfo.title);
+  } else if (changeInfo.status === 'complete' && tab?.title) {
+    cacheTabTitle(tabId, tab.title);
+  }
+
+  if (changeInfo.status === 'complete' && tab?.active) {
     queueCapture(tabId);
+  }
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab?.id !== undefined && typeof tab.title === 'string' && tab.title.trim().length > 0) {
+    cacheTabTitle(tab.id, tab.title);
   }
 });
 
@@ -95,8 +191,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   screenshotCache.delete(tabId);
   chrome.storage.local.remove(`screenshot_${tabId}`);
+  removeCachedTitle(tabId);
   // Remove from queue if present
   captureQueue = captureQueue.filter(id => id !== tabId);
+});
+
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  const cachedTitle = titleCache.get(removedTabId);
+  if (cachedTitle) {
+    titleCache.set(addedTabId, cachedTitle);
+    titleCache.delete(removedTabId);
+    persistTitleCache();
+  }
 });
 
 // Queue a tab for capture with rate limiting
@@ -163,6 +269,23 @@ async function captureTabScreenshot(tabId) {
 
 // Message handler for popup to request screenshots
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'getCachedMetadata') {
+    const metadata = {};
+    if (Array.isArray(request.tabIds)) {
+      request.tabIds.forEach((id) => {
+        const numericId = Number(id);
+        if (Number.isInteger(numericId)) {
+          const cachedTitle = titleCache.get(numericId);
+          if (cachedTitle) {
+            metadata[numericId] = { title: cachedTitle };
+          }
+        }
+      });
+    }
+    sendResponse({ metadata });
+    return;
+  }
+
   if (request.action === 'getScreenshot') {
     const screenshot = screenshotCache.get(request.tabId);
     if (screenshot) {

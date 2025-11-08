@@ -227,12 +227,9 @@ body.overlay-mode .container {
 .tabs-list.view-compact .tab-url {
   font-size: 11px;
   color: #9ca3af;
-  max-width: 200px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  max-width: 100%;
 }
 
 /* Thumbnail View */
@@ -418,7 +415,36 @@ body.overlay-mode .container {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: 100%;
 }
+
+.tab-url-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.tab-last-visited {
+  font-size: 11px;
+  color: #9ca3af;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.history-item .tab-last-visited {
+  color: #9ca3af;
+}
+
+.tabs-list.view-large .tab-last-visited {
+  color: rgba(255, 255, 255, 0.85);
+}
+
 
 .preview-placeholder,
 .preview-loading {
