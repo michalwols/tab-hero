@@ -45,9 +45,10 @@
           <button id="historyRange30" class="toggle-btn history-range-btn" type="button" role="radio" aria-checked="false" data-range="30">30d</button>
           <button id="historyRangeAll" class="toggle-btn history-range-btn" type="button" role="radio" aria-checked="false" data-range="all">All</button>
         </div>
-        <div class="toggle-group" title="Choose where Tab Hero appears">
-          <button id="displayModePopup" class="toggle-btn" type="button">Toolbar</button>
-          <button id="displayModeOverlay" class="toggle-btn" type="button">Center</button>
+        <div class="toggle-group" title="Choose how many history results to show" role="radiogroup" aria-label="History results">
+          <button class="toggle-btn history-limit-btn" type="button" role="radio" aria-checked="false" data-limit="25">25</button>
+          <button class="toggle-btn history-limit-btn" type="button" role="radio" aria-checked="false" data-limit="50">50</button>
+          <button class="toggle-btn history-limit-btn active" type="button" role="radio" aria-checked="true" data-limit="100">100</button>
         </div>
       </div>
     </div>

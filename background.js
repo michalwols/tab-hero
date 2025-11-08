@@ -6,7 +6,7 @@ const TITLE_CACHE_STORAGE_KEY = 'tabHeroTitleCache';
 let lastCaptureTime = 0;
 let captureQueue = [];
 let isProcessingQueue = false;
-let displayMode = 'popup';
+let displayMode = 'overlay';
 const titleCache = new Map();
 
 initializeDisplayMode();
@@ -16,9 +16,13 @@ async function initializeDisplayMode() {
   try {
     const result = await chrome.storage.local.get(['displayMode']);
     const savedMode = result.displayMode;
-    displayMode = savedMode === 'overlay' ? 'overlay' : 'popup';
+    displayMode = savedMode === 'overlay' ? 'overlay' : 'overlay';
+    if (savedMode !== 'overlay') {
+      await chrome.storage.local.set({ displayMode: 'overlay' });
+    }
   } catch (error) {
-    displayMode = 'popup';
+    displayMode = 'overlay';
+    chrome.storage.local.set({ displayMode: 'overlay' }).catch(() => {});
   }
 
   updateActionPresentation();
@@ -149,7 +153,11 @@ chrome.action.onClicked.addListener((tab) => {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes.displayMode) {
     const newMode = changes.displayMode.newValue;
-    displayMode = newMode === 'overlay' ? 'overlay' : 'popup';
+    if (newMode !== 'overlay') {
+      chrome.storage.local.set({ displayMode: 'overlay' }).catch(() => {});
+      return;
+    }
+    displayMode = 'overlay';
     updateActionPresentation();
   }
 });

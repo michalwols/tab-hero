@@ -4,7 +4,7 @@ let historyResults = [];
 let selectedIndex = 0;
 let currentSort = 'recent';
 let currentViewMode = 'large'; // 'compact', 'thumbnail', 'large'
-let currentDisplayMode = 'popup'; // 'popup', 'overlay'
+let currentDisplayMode = 'overlay'; // forced overlay mode
 let previewCache = new Map();
 let intersectionObserver = null;
 let tabsResizeObserver = null;
@@ -12,7 +12,9 @@ let hasWindowResizeListener = false;
 let pendingSizingFrame = null;
 let debugMode = false;
 let historyRange = '7';
+let historyResultsLimit = 100;
 const HISTORY_RANGE_OPTIONS = ['7', '30', 'all'];
+const HISTORY_RESULTS_LIMIT_OPTIONS = [25, 50, 100];
 const isOverlayContext = window.top !== window;
 const LARGE_PREVIEW_ASPECT_RATIO = 9 / 16;
 const LARGE_PREVIEW_MIN_HEIGHT = 200;
@@ -31,6 +33,7 @@ const closeAllBtn = document.getElementById('closeAllBtn');
 const displayModePopupBtn = document.getElementById('displayModePopup');
 const displayModeOverlayBtn = document.getElementById('displayModeOverlay');
 const historyRangeButtons = Array.from(document.querySelectorAll('.history-range-btn'));
+const historyLimitButtons = Array.from(document.querySelectorAll('.history-limit-btn'));
 
 if (isOverlayContext && document.body) {
   document.body.classList.add('overlay-mode');
@@ -167,24 +170,29 @@ async function init() {
   await loadSavedSortMode();
   await loadSavedViewMode();
   await loadSavedHistoryRange();
+  await loadSavedHistoryResultsLimit();
   setupEventListeners();
   focusSearchInput();
 }
 
 // Load saved display mode and handle overlay fallback
 async function loadSavedDisplayMode() {
+  currentDisplayMode = 'overlay';
+
   try {
     const result = await chrome.storage.local.get(['displayMode']);
     const savedMode = result.displayMode;
-    currentDisplayMode = savedMode === 'overlay' ? 'overlay' : 'popup';
+    if (savedMode !== 'overlay') {
+      await chrome.storage.local.set({ displayMode: 'overlay' });
+    }
   } catch (error) {
-    console.log('Could not load display mode:', error);
-    currentDisplayMode = 'popup';
+    console.log('Could not enforce overlay mode:', error);
+    chrome.storage.local.set({ displayMode: 'overlay' }).catch(() => {});
   }
 
   updateDisplayModeControls();
 
-  if (!isOverlayContext && currentDisplayMode === 'overlay') {
+  if (!isOverlayContext) {
     try {
       const result = await chrome.runtime.sendMessage({ action: 'openOverlay' });
       if (result && result.success) {
@@ -226,6 +234,22 @@ async function loadSavedHistoryRange() {
   }
 
   setHistoryRange('7', { skipSave: true, skipFilter: true });
+}
+
+// Load saved history results limit
+async function loadSavedHistoryResultsLimit() {
+  try {
+    const result = await chrome.storage.local.get(['historyResultsLimit']);
+    const savedLimit = Number(result.historyResultsLimit);
+    if (HISTORY_RESULTS_LIMIT_OPTIONS.includes(savedLimit)) {
+      setHistoryResultsLimit(savedLimit, { skipSave: true, skipFilter: true });
+      return;
+    }
+  } catch (error) {
+    console.log('Could not load history results limit:', error);
+  }
+
+  setHistoryResultsLimit(100, { skipSave: true, skipFilter: true });
 }
 
 // Load saved sort mode from storage
@@ -938,15 +962,18 @@ async function filterTabs() {
 async function searchHistory(query) {
   try {
     const searchOptions = {
-      text: query,
-      maxResults: historyRange === 'all' ? 100 : 20
+      text: query
     };
     
     const windowMs = getHistoryWindowMs(historyRange);
+    const baseFetchSize = Math.max(historyResultsLimit * 2, 40);
+    
     if (windowMs !== null) {
       searchOptions.startTime = Date.now() - windowMs;
-    } else if (historyRange === 'all') {
+      searchOptions.maxResults = Math.min(500, baseFetchSize);
+    } else {
       searchOptions.startTime = 0; // Include full history
+      searchOptions.maxResults = Math.min(500, Math.max(baseFetchSize, 200));
     }
 
     const results = await chrome.history.search(searchOptions);
@@ -955,7 +982,7 @@ async function searchHistory(query) {
     const openUrls = new Set(allTabs.map(t => t.url));
     historyResults = results
       .filter(item => !openUrls.has(item.url))
-      .slice(0, 100);
+      .slice(0, historyResultsLimit);
   } catch (error) {
     console.error('History search failed:', error);
     historyResults = [];
@@ -1201,6 +1228,13 @@ function setupEventListeners() {
       setHistoryRange(range);
     });
   });
+
+  historyLimitButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const limit = Number(btn.dataset.limit);
+      setHistoryResultsLimit(limit);
+    });
+  });
   
   // Action buttons
   copyAllBtn.addEventListener('click', copyAllUrls);
@@ -1296,6 +1330,29 @@ function setHistoryRange(range, options = {}) {
 
   if (!skipSave) {
     chrome.storage.local.set({ historyRange: range });
+  }
+
+  if (!skipFilter && searchInput.value.trim()) {
+    filterTabs();
+  }
+}
+
+function setHistoryResultsLimit(limit, options = {}) {
+  const { skipSave = false, skipFilter = false } = options;
+  if (!HISTORY_RESULTS_LIMIT_OPTIONS.includes(limit)) {
+    limit = 100;
+  }
+
+  historyResultsLimit = limit;
+
+  historyLimitButtons.forEach((btn) => {
+    const isActive = Number(btn.dataset.limit) === limit;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
+  });
+
+  if (!skipSave) {
+    chrome.storage.local.set({ historyResultsLimit: limit });
   }
 
   if (!skipFilter && searchInput.value.trim()) {

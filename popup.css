@@ -155,7 +155,7 @@ body.overlay-mode .container {
   display: flex;
   flex-direction: row;
   align-items: center;
-  padding: 6px 36px 6px 8px;
+  padding: 6px 8px;
   margin-bottom: 1px;
   background: transparent;
   border: none;
@@ -237,7 +237,7 @@ body.overlay-mode .container {
   display: flex;
   flex-direction: row;
   align-items: center;
-  padding: 6px 44px 6px 8px;
+  padding: 6px 8px;
   margin-bottom: 2px;
   background: transparent;
   border: none;
