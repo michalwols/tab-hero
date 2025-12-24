@@ -3,30 +3,31 @@ let filteredTabs = [];
 let historyResults = [];
 let selectedIndex = 0;
 let currentSort = 'recent';
-let currentViewMode = 'large'; // 'compact', 'thumbnail', 'large'
 let currentDisplayMode = 'overlay'; // forced overlay mode
-let previewCache = new Map();
-let intersectionObserver = null;
-let tabsResizeObserver = null;
-let hasWindowResizeListener = false;
-let pendingSizingFrame = null;
 let debugMode = false;
 let historyRange = '7';
 let historyResultsLimit = 100;
+let darkMode = false;
+
+// Tree view state
+let treeViewEnabled = false;
+let groupByWindowEnabled = false;
+let tabTree = [];
+let flattenedTree = [];
+
+// Selection state
+let selectedTabIds = new Set();
+let lastSelectedIndex = null;
+
 const HISTORY_RANGE_OPTIONS = ['7', '30', 'all'];
 const HISTORY_RESULTS_LIMIT_OPTIONS = [25, 50, 100];
 const isOverlayContext = window.top !== window;
-const LARGE_PREVIEW_ASPECT_RATIO = 9 / 16;
-const LARGE_PREVIEW_MIN_HEIGHT = 200;
 
 const searchInput = document.getElementById('searchInput');
 const tabsList = document.getElementById('tabsList');
 const sortByUrlBtn = document.getElementById('sortByUrl');
 const sortByTitleBtn = document.getElementById('sortByTitle');
 const sortByRecentBtn = document.getElementById('sortByRecent');
-const viewCompactBtn = document.getElementById('viewCompact');
-const viewThumbnailBtn = document.getElementById('viewThumbnail');
-const viewLargeBtn = document.getElementById('viewLarge');
 const copyAllBtn = document.getElementById('copyAllBtn');
 const moveAllBtn = document.getElementById('moveAllBtn');
 const closeAllBtn = document.getElementById('closeAllBtn');
@@ -34,6 +35,11 @@ const displayModePopupBtn = document.getElementById('displayModePopup');
 const displayModeOverlayBtn = document.getElementById('displayModeOverlay');
 const historyRangeButtons = Array.from(document.querySelectorAll('.history-range-btn'));
 const historyLimitButtons = Array.from(document.querySelectorAll('.history-limit-btn'));
+const viewFlatBtn = document.getElementById('viewFlat');
+const viewTreeBtn = document.getElementById('viewTree');
+const groupOffBtn = document.getElementById('groupOff');
+const groupByWindowBtn = document.getElementById('groupByWindow');
+const themeToggleBtn = document.getElementById('themeToggle');
 
 if (isOverlayContext && document.body) {
   document.body.classList.add('overlay-mode');
@@ -47,7 +53,7 @@ function closeUI() {
   }
 }
 
-window.addEventListener('message', (event) => {
+window.addEventListener('message', async (event) => {
   try {
     const extensionOrigin = chrome.runtime.getURL('').replace(/\/$/, '');
     if (event.origin !== extensionOrigin) {
@@ -58,77 +64,225 @@ window.addEventListener('message', (event) => {
   }
 
   if (event.data && event.data.type === 'TAB_HERO_FOCUS_SEARCH') {
+    await refreshTabs();
     focusSearchInput();
   }
 });
 
-// Copy all filtered tab URLs as markdown
+// Refresh tabs when page becomes visible (handles returning to old tab)
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') {
+    await refreshTabs();
+  }
+});
+
+// Handle tab selection with modifier keys
+function handleTabSelection(tabId, index, event) {
+  if (event.shiftKey && lastSelectedIndex !== null) {
+    // Shift+click: select range
+    const start = Math.min(lastSelectedIndex, index);
+    const end = Math.max(lastSelectedIndex, index);
+
+    // Get all tabs in range
+    const tabsInRange = getTabsInIndexRange(start, end);
+    tabsInRange.forEach(tab => selectedTabIds.add(tab.id));
+  } else if (event.metaKey || event.ctrlKey) {
+    // Cmd/Ctrl+click: toggle individual
+    if (selectedTabIds.has(tabId)) {
+      selectedTabIds.delete(tabId);
+    } else {
+      selectedTabIds.add(tabId);
+    }
+    lastSelectedIndex = index;
+  } else {
+    // Regular click: toggle individual
+    if (selectedTabIds.has(tabId)) {
+      selectedTabIds.delete(tabId);
+    } else {
+      selectedTabIds.add(tabId);
+    }
+    lastSelectedIndex = index;
+  }
+  updateSelectionUI();
+}
+
+// Get tabs in index range for shift+click
+function getTabsInIndexRange(start, end) {
+  const tabs = [];
+  if (treeViewEnabled || groupByWindowEnabled) {
+    for (let i = start; i <= end; i++) {
+      const item = flattenedTree[i];
+      if (item) {
+        tabs.push(item.tab || item);
+      }
+    }
+  } else {
+    for (let i = start; i <= end; i++) {
+      if (filteredTabs[i]) {
+        tabs.push(filteredTabs[i]);
+      }
+    }
+  }
+  return tabs;
+}
+
+// Update UI to reflect selection state
+function updateSelectionUI() {
+  // Update tab items
+  const tabItems = tabsList.querySelectorAll('.tab-item[data-tab-id]');
+  tabItems.forEach(item => {
+    const tabId = parseInt(item.dataset.tabId, 10);
+    const checkbox = item.querySelector('.tab-checkbox');
+    if (selectedTabIds.has(tabId)) {
+      item.classList.add('checked');
+      if (checkbox) checkbox.checked = true;
+    } else {
+      item.classList.remove('checked');
+      if (checkbox) checkbox.checked = false;
+    }
+  });
+
+  // Update button labels to show selection count
+  updateActionButtonLabels();
+}
+
+// Update action button labels (placeholder for future use)
+function updateActionButtonLabels() {
+  // Buttons keep static labels - no counts shown
+}
+
+// Get tabs to operate on (selected or all filtered)
+function getTargetTabs() {
+  if (selectedTabIds.size > 0) {
+    return filteredTabs.filter(tab => selectedTabIds.has(tab.id));
+  }
+  return filteredTabs;
+}
+
+// Clear selection
+function clearSelection() {
+  selectedTabIds.clear();
+  lastSelectedIndex = null;
+  updateActionButtonLabels();
+}
+
+// Refresh tab data and re-render
+async function refreshTabs() {
+  const previousScrollTop = tabsList.scrollTop;
+  await loadTabs();
+
+  // Clean up stale selections (tabs that no longer exist)
+  const currentTabIds = new Set(allTabs.map(t => t.id));
+  for (const id of selectedTabIds) {
+    if (!currentTabIds.has(id)) {
+      selectedTabIds.delete(id);
+    }
+  }
+  updateActionButtonLabels();
+
+  applySortOrder();
+
+  // Re-apply search filter if active
+  const query = searchInput.value.toLowerCase().trim();
+  if (query) {
+    const keywords = query.split(/\s+/).filter(w => w.length > 0);
+    filteredTabs = allTabs.filter(tab => {
+      const title = (tab.title || '').toLowerCase();
+      const url = (tab.url || '').toLowerCase();
+      const combined = title + ' ' + url;
+      return keywords.every(keyword => combined.includes(keyword));
+    });
+  } else {
+    filteredTabs = [...allTabs];
+  }
+
+  applySortOrder();
+
+  // Maintain selection if possible
+  const tabCount = getTabCount();
+  const totalItems = tabCount + historyResults.length;
+  if (selectedIndex >= totalItems && totalItems > 0) {
+    selectedIndex = totalItems - 1;
+  }
+
+  renderTabs({
+    preserveScroll: true,
+    targetScrollTop: previousScrollTop,
+    suppressAutoScroll: true
+  });
+}
+
+// Copy tab URLs as markdown
 async function copyAllUrls() {
-  if (filteredTabs.length === 0) {
+  const targetTabs = getTargetTabs();
+  if (targetTabs.length === 0) {
     console.log('No tabs to copy');
     return;
   }
-  
+
   // Create markdown list
-  const markdown = filteredTabs.map(tab => {
+  const markdown = targetTabs.map(tab => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
     return `- [${title}](${url})`;
   }).join('\n');
-  
+
   // Copy to clipboard
   try {
     await navigator.clipboard.writeText(markdown);
-    
+
     // Visual feedback
     const originalText = copyAllBtn.textContent;
     copyAllBtn.textContent = '✓ Copied!';
     copyAllBtn.style.color = '#16a34a';
-    
+
+    // Clear selection after successful copy
+    clearSelection();
+
     setTimeout(() => {
-      copyAllBtn.textContent = originalText;
+      updateActionButtonLabels();
       copyAllBtn.style.color = '';
     }, 2000);
   } catch (error) {
     console.error('Failed to copy:', error);
     copyAllBtn.textContent = '✗ Failed';
     setTimeout(() => {
-      copyAllBtn.textContent = 'Copy';
+      updateActionButtonLabels();
     }, 2000);
   }
 }
 
-// Close all filtered tabs
+// Close tabs (selected or all filtered)
 async function closeAllFilteredTabs() {
-  if (filteredTabs.length === 0) {
+  const targetTabs = getTargetTabs();
+  if (targetTabs.length === 0) {
     console.log('No tabs to close');
     return;
   }
-  
+
   // Confirm if closing more than 5 tabs
-  if (filteredTabs.length > 5) {
-    const confirmed = confirm(`Close ${filteredTabs.length} tabs?`);
+  if (targetTabs.length > 5) {
+    const confirmed = confirm(`Close ${targetTabs.length} tabs?`);
     if (!confirmed) return;
   }
-  
-  // Get all tab IDs
-  const tabIds = filteredTabs.map(tab => tab.id);
-  
-  // Close all tabs
+
+  // Get all tab IDs (exclude pinned)
+  const tabIds = targetTabs.filter(tab => !tab.pinned).map(tab => tab.id);
+
+  // Close tabs
   try {
     await chrome.tabs.remove(tabIds);
-    
-    // Reload and reset
-    await loadTabs();
-    searchInput.value = '';
-    await filterTabs();
+    clearSelection();
+    await refreshTabs();
   } catch (error) {
     console.error('Failed to close tabs:', error);
   }
 }
 
+// Move tabs to new window (selected or all filtered)
 async function moveAllFilteredTabs() {
-  const movableTabs = filteredTabs.filter(tab => !tab.pinned);
+  const targetTabs = getTargetTabs();
+  const movableTabs = targetTabs.filter(tab => !tab.pinned);
 
   if (movableTabs.length === 0) {
     console.log('No tabs to move');
@@ -151,8 +305,8 @@ async function moveAllFilteredTabs() {
       await chrome.windows.update(newWindow.id, { focused: true });
     }
 
-    await loadTabs();
-    await filterTabs();
+    clearSelection();
+    await refreshTabs();
   } catch (error) {
     console.error('Failed to move tabs:', error);
   }
@@ -160,19 +314,78 @@ async function moveAllFilteredTabs() {
 
 // Initialize
 async function init() {
+  await loadSavedTheme();
   await loadTabs();
-  setupIntersectionObserver();
-  setupResizeHandling();
   const continueInit = await loadSavedDisplayMode();
   if (!continueInit) {
     return;
   }
   await loadSavedSortMode();
-  await loadSavedViewMode();
+  await loadSavedTreeViewMode();
+  await loadSavedGroupByWindowMode();
   await loadSavedHistoryRange();
   await loadSavedHistoryResultsLimit();
   setupEventListeners();
+  applySortOrder();
+  renderTabs();
   focusSearchInput();
+}
+
+// Load saved theme from storage, fallback to system preference
+async function loadSavedTheme() {
+  try {
+    const result = await chrome.storage.local.get(['darkMode']);
+    if (typeof result.darkMode === 'boolean') {
+      setTheme(result.darkMode, { skipSave: true });
+    } else {
+      // No saved preference, use system setting
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setTheme(prefersDark, { skipSave: true });
+    }
+  } catch (error) {
+    console.log('Could not load saved theme:', error);
+    // Fallback to system preference on error
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    setTheme(prefersDark, { skipSave: true });
+  }
+}
+
+// Set theme
+function setTheme(isDark, options = {}) {
+  const { skipSave = false } = options;
+  darkMode = isDark;
+
+  if (isDark) {
+    document.documentElement.classList.add('dark');
+    document.documentElement.classList.remove('light');
+  } else {
+    document.documentElement.classList.remove('dark');
+    document.documentElement.classList.add('light');
+  }
+
+  updateThemeToggleIcon();
+
+  if (!skipSave) {
+    chrome.storage.local.set({ darkMode: isDark });
+  }
+}
+
+// Update theme toggle button icon
+function updateThemeToggleIcon() {
+  if (!themeToggleBtn) return;
+
+  const lightIcon = themeToggleBtn.querySelector('.theme-icon-light');
+  const darkIcon = themeToggleBtn.querySelector('.theme-icon-dark');
+
+  if (lightIcon && darkIcon) {
+    lightIcon.style.display = darkMode ? 'none' : 'inline';
+    darkIcon.style.display = darkMode ? 'inline' : 'none';
+  }
+}
+
+// Toggle theme
+function toggleTheme() {
+  setTheme(!darkMode);
 }
 
 // Load saved display mode and handle overlay fallback
@@ -207,17 +420,56 @@ async function loadSavedDisplayMode() {
   return true;
 }
 
-// Load saved view mode from storage
-async function loadSavedViewMode() {
+// Load saved tree view mode from storage
+async function loadSavedTreeViewMode() {
   try {
-    const result = await chrome.storage.local.get(['viewMode']);
-    if (result.viewMode && ['compact', 'thumbnail', 'large'].includes(result.viewMode)) {
-      currentViewMode = result.viewMode;
-      setViewMode(currentViewMode);
+    const result = await chrome.storage.local.get(['treeViewEnabled']);
+    if (typeof result.treeViewEnabled === 'boolean') {
+      treeViewEnabled = result.treeViewEnabled;
+      updateTreeViewButtons();
     }
   } catch (error) {
-    console.log('Could not load saved view mode:', error);
+    console.log('Could not load saved tree view mode:', error);
   }
+}
+
+// Load saved group by window mode from storage
+async function loadSavedGroupByWindowMode() {
+  try {
+    const result = await chrome.storage.local.get(['groupByWindowEnabled']);
+    if (typeof result.groupByWindowEnabled === 'boolean') {
+      groupByWindowEnabled = result.groupByWindowEnabled;
+      updateGroupByWindowButtons();
+    }
+  } catch (error) {
+    console.log('Could not load saved group by window mode:', error);
+  }
+}
+
+function updateTreeViewButtons() {
+  viewFlatBtn.classList.toggle('active', !treeViewEnabled);
+  viewTreeBtn.classList.toggle('active', treeViewEnabled);
+}
+
+function updateGroupByWindowButtons() {
+  groupOffBtn.classList.toggle('active', !groupByWindowEnabled);
+  groupByWindowBtn.classList.toggle('active', groupByWindowEnabled);
+}
+
+async function setTreeView(enabled) {
+  treeViewEnabled = enabled;
+  updateTreeViewButtons();
+  await chrome.storage.local.set({ treeViewEnabled: enabled });
+  selectedIndex = 0;
+  renderTabs();
+}
+
+async function setGroupByWindow(enabled) {
+  groupByWindowEnabled = enabled;
+  updateGroupByWindowButtons();
+  await chrome.storage.local.set({ groupByWindowEnabled: enabled });
+  selectedIndex = 0;
+  renderTabs();
 }
 
 // Load saved history range from storage
@@ -392,294 +644,93 @@ function shouldUseCachedTitle(tab, cachedTitle) {
   return false;
 }
 
-// Setup Intersection Observer for lazy loading
-function setupIntersectionObserver() {
-  intersectionObserver = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        const tabItem = entry.target;
-        const tabId = parseInt(tabItem.dataset.tabId);
-        const preview = tabItem.querySelector('.tab-preview');
-        
-        if (preview && !preview.dataset.loaded && currentViewMode !== 'compact') {
-          loadPreviewForTab(tabId, preview);
+// Build tree structure from flat tabs array using openerTabId
+function buildTabTree(tabs) {
+  const nodeMap = new Map();
+
+  // Create a node for each tab
+  tabs.forEach(tab => {
+    nodeMap.set(tab.id, {
+      tab: tab,
+      children: [],
+      depth: 0,
+      flatIndex: -1
+    });
+  });
+
+  // Build parent-child relationships
+  const rootNodes = [];
+
+  tabs.forEach(tab => {
+    const node = nodeMap.get(tab.id);
+
+    if (tab.openerTabId && nodeMap.has(tab.openerTabId)) {
+      // Parent exists - add as child
+      const parentNode = nodeMap.get(tab.openerTabId);
+      parentNode.children.push(node);
+    } else {
+      // No opener or opener not in set - this is a root
+      rootNodes.push(node);
+    }
+  });
+
+  // Set depths recursively
+  function setDepths(node, depth) {
+    node.depth = depth;
+    node.children.forEach(child => setDepths(child, depth + 1));
+  }
+
+  rootNodes.forEach(root => setDepths(root, 0));
+
+  // Sort children at each level
+  function sortChildren(node) {
+    if (node.children.length > 0) {
+      applySortToNodes(node.children);
+      node.children.forEach(sortChildren);
+    }
+  }
+
+  applySortToNodes(rootNodes);
+  rootNodes.forEach(sortChildren);
+
+  return rootNodes;
+}
+
+// Sort an array of tree nodes based on current sort mode
+function applySortToNodes(nodes) {
+  switch (currentSort) {
+    case 'url':
+      nodes.sort((a, b) => (a.tab.url || '').localeCompare(b.tab.url || ''));
+      break;
+    case 'title':
+      nodes.sort((a, b) => (a.tab.title || '').localeCompare(b.tab.title || ''));
+      break;
+    case 'recent':
+    default:
+      nodes.sort((a, b) => {
+        const aTime = typeof a.tab.lastAccessed === 'number' ? a.tab.lastAccessed : 0;
+        const bTime = typeof b.tab.lastAccessed === 'number' ? b.tab.lastAccessed : 0;
+        if (bTime !== aTime) {
+          return bTime - aTime;
         }
-      }
-    });
-  }, {
-    root: tabsList,
-    rootMargin: '100px',
-    threshold: 0.1
-  });
-}
-
-function setupResizeHandling() {
-  if (!tabsList) {
-    return;
-  }
-
-  if (!hasWindowResizeListener) {
-    window.addEventListener('resize', updateLargePreviewSizing);
-    hasWindowResizeListener = true;
-  }
-
-  if (typeof ResizeObserver !== 'undefined') {
-    if (tabsResizeObserver) {
-      tabsResizeObserver.disconnect();
-    }
-
-    tabsResizeObserver = new ResizeObserver(() => {
-      updateLargePreviewSizing();
-    });
-
-    tabsResizeObserver.observe(tabsList);
-  }
-}
-
-function ensurePreviewContent(previewElement) {
-  if (!previewElement) return null;
-
-  let content = previewElement.querySelector('.tab-preview-content');
-  if (content) {
-    return content;
-  }
-
-  content = document.createElement('div');
-  content.className = 'tab-preview-content';
-
-  while (previewElement.firstChild) {
-    content.appendChild(previewElement.firstChild);
-  }
-
-  previewElement.appendChild(content);
-  return content;
-}
-
-function clearLargePreviewSizing() {
-  const previews = tabsList.querySelectorAll('.tab-preview');
-  previews.forEach(preview => {
-    preview.style.removeProperty('height');
-    preview.style.removeProperty('min-height');
-    const tabItem = preview.closest('.tab-item');
-    if (tabItem) {
-      tabItem.style.removeProperty('min-height');
-    }
-  });
-}
-
-function queueLargePreviewSizing() {
-  if (currentViewMode !== 'large') {
-    return;
-  }
-
-  if (pendingSizingFrame !== null) {
-    cancelAnimationFrame(pendingSizingFrame);
-  }
-
-  pendingSizingFrame = requestAnimationFrame(() => {
-    pendingSizingFrame = requestAnimationFrame(() => {
-      updateLargePreviewSizing();
-      pendingSizingFrame = null;
-    });
-  });
-}
-
-function updateLargePreviewSizing() {
-  if (currentViewMode !== 'large') {
-    return;
-  }
-
-  const previews = tabsList.querySelectorAll('.tab-preview');
-
-  previews.forEach(preview => {
-    let width = preview.getBoundingClientRect().width;
-
-    if (!width) {
-      const tabItem = preview.closest('.tab-item');
-      if (tabItem) {
-        width = tabItem.getBoundingClientRect().width;
-      }
-    }
-
-    if (!width) {
-      width = tabsList.getBoundingClientRect().width;
-    }
-
-    if (!width) {
-      return;
-    }
-
-    const height = Math.max(LARGE_PREVIEW_MIN_HEIGHT, Math.round(width * LARGE_PREVIEW_ASPECT_RATIO));
-    preview.style.height = `${height}px`;
-    preview.style.minHeight = `${height}px`;
-
-    const tabItem = preview.closest('.tab-item');
-    if (tabItem) {
-      tabItem.style.minHeight = `${height}px`;
-    }
-  });
-}
-
-// Load preview for a specific tab
-async function loadPreviewForTab(tabId, previewElement) {
-  if (previewElement.dataset.loaded === 'true') return;
-  previewElement.dataset.loaded = 'true';
-
-  const previewContent = ensurePreviewContent(previewElement);
-  if (!previewContent) return;
-  
-  const debugInfo = debugMode ? document.createElement('div') : null;
-  if (debugInfo) {
-    debugInfo.className = 'debug-info';
-    debugInfo.textContent = 'Loading...';
-  }
-  
-  // Check memory cache first
-  if (previewCache.has(tabId)) {
-    const cachedPreview = previewCache.get(tabId);
-    if (cachedPreview) {
-      if (debugInfo) debugInfo.textContent = '✓ Memory Cache';
-      const img = document.createElement('img');
-      img.src = cachedPreview;
-      previewContent.innerHTML = '';
-      previewContent.appendChild(img);
-      if (debugInfo) previewElement.appendChild(debugInfo);
-      return;
-    } else {
-      if (debugInfo) debugInfo.textContent = '✗ Cache: null';
-      showFavicon(tabId, previewElement);
-      if (debugInfo) previewElement.appendChild(debugInfo);
-      return;
-    }
-  }
-  
-  // Try to get from background service cache
-  try {
-    if (debugInfo) debugInfo.textContent = 'Checking BG...';
-    const response = await chrome.runtime.sendMessage({
-      action: 'getScreenshot',
-      tabId: tabId
-    });
-    
-    if (response && response.screenshot) {
-      if (debugInfo) debugInfo.textContent = '✓ Background Cache';
-      previewCache.set(tabId, response.screenshot);
-      const img = document.createElement('img');
-      img.src = response.screenshot;
-      previewContent.innerHTML = '';
-      previewContent.appendChild(img);
-      if (debugInfo) previewElement.appendChild(debugInfo);
-      return;
-    } else {
-      if (debugInfo) debugInfo.textContent = '✗ No BG cache';
-    }
-  } catch (error) {
-    console.log('Could not get screenshot from background:', error);
-    if (debugInfo) debugInfo.textContent = '✗ BG Error';
-  }
-  
-  // Final fallback to favicon
-  if (debugInfo) debugInfo.textContent = '→ Favicon fallback';
-  showFavicon(tabId, previewElement);
-  if (debugInfo) previewElement.appendChild(debugInfo);
-  queueLargePreviewSizing();
-}
-
-// Show favicon as fallback
-function showFavicon(tabId, previewElement) {
-  const tab = allTabs.find(t => t.id === tabId);
-  const previewContent = ensurePreviewContent(previewElement);
-  if (!previewContent) return;
-
-  if (!tab) {
-    if (currentViewMode === 'thumbnail') {
-      renderThumbnailFavicon(previewElement, null);
-    } else {
-      previewContent.innerHTML = '<div class="preview-placeholder">📄</div>';
-    }
-    queueLargePreviewSizing();
-    return;
-  }
-  
-  if (currentViewMode === 'thumbnail') {
-    renderThumbnailFavicon(previewElement, tab);
-  } else {
-    previewContent.innerHTML = '';
-    
-    if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
-      const favicon = document.createElement('img');
-      favicon.src = tab.favIconUrl;
-      favicon.className = 'favicon-fallback';
-      favicon.onerror = () => {
-        previewContent.innerHTML = '<div class="preview-placeholder">🌐</div>';
-      };
-      previewContent.appendChild(favicon);
-    } else {
-      previewContent.innerHTML = '<div class="preview-placeholder">🌐</div>';
-    }
-  }
-  
-  previewCache.set(tabId, null);
-  queueLargePreviewSizing();
-}
-
-function renderThumbnailFavicon(previewElement, tab) {
-  const previewContent = ensurePreviewContent(previewElement);
-  if (!previewContent) return;
-
-  previewContent.innerHTML = '';
-
-  if (tab && tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
-    const img = document.createElement('img');
-    img.src = tab.favIconUrl;
-    img.alt = '';
-    img.className = 'thumbnail-favicon';
-    img.referrerPolicy = 'no-referrer';
-    img.onerror = () => {
-      img.remove();
-      previewContent.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
-    };
-    previewContent.appendChild(img);
-  } else {
-    previewContent.innerHTML = '<div class="thumbnail-favicon-placeholder">🌐</div>';
-  }
-  queueLargePreviewSizing();
-}
-
-// Set view mode
-function setViewMode(mode) {
-  currentViewMode = mode;
-  
-  // Save to storage
-  chrome.storage.local.set({ viewMode: mode });
-  
-  // Update button states
-  [viewCompactBtn, viewThumbnailBtn, viewLargeBtn].forEach(btn => 
-    btn.classList.remove('active')
-  );
-  
-  // Update tabs list class
-  tabsList.className = 'tabs-list';
-  
-  switch (mode) {
-    case 'compact':
-      viewCompactBtn.classList.add('active');
-      tabsList.classList.add('view-compact');
-      clearLargePreviewSizing();
-      break;
-    case 'thumbnail':
-      viewThumbnailBtn.classList.add('active');
-      tabsList.classList.add('view-thumbnail');
-      clearLargePreviewSizing();
-      break;
-    case 'large':
-      viewLargeBtn.classList.add('active');
-      tabsList.classList.add('view-large');
-      queueLargePreviewSizing();
+        return (b.tab.id || 0) - (a.tab.id || 0);
+      });
       break;
   }
-  
-  renderTabs();
+}
+
+// Flatten tree into array in DFS order for keyboard navigation
+function flattenTree(roots) {
+  const result = [];
+
+  function traverse(node) {
+    node.flatIndex = result.length;
+    result.push(node);
+    node.children.forEach(traverse);
+  }
+
+  roots.forEach(traverse);
+  return result;
 }
 
 // Render tabs list
@@ -689,54 +740,39 @@ async function renderTabs(options = {}) {
     targetScrollTop = null,
     suppressAutoScroll = false
   } = options;
-  // Disconnect observer before clearing
-  if (intersectionObserver) {
-    intersectionObserver.disconnect();
-  }
 
   if (filteredTabs.length === 0 && historyResults.length === 0) {
     tabsList.innerHTML = '<div class="no-tabs">No tabs or history found</div>';
     return;
   }
 
-  // Clear content but preserve classes
   const fragment = document.createDocumentFragment();
-  
-  // Render tabs section
-  if (filteredTabs.length > 0) {
-    const tabsHeader = document.createElement('div');
-    tabsHeader.className = 'section-header';
-    tabsHeader.textContent = `Open Tabs (${filteredTabs.length})`;
-    fragment.appendChild(tabsHeader);
+
+  // Choose rendering mode
+  if (groupByWindowEnabled) {
+    renderGroupedByWindow(fragment);
+  } else if (treeViewEnabled) {
+    renderTreeView(fragment);
+  } else {
+    renderFlatList(fragment);
   }
-  
-  for (let i = 0; i < filteredTabs.length; i++) {
-    const tab = filteredTabs[i];
-    const tabItem = createTabElement(tab, i, false);
-    fragment.appendChild(tabItem);
-    
-    // Observe for lazy loading
-    if (currentViewMode !== 'compact' && intersectionObserver) {
-      intersectionObserver.observe(tabItem);
-    }
-  }
-  
-  // Render history section
+
+  // Render history section (always flat)
   if (historyResults.length > 0) {
     const historyHeader = document.createElement('div');
     historyHeader.className = 'section-header';
     historyHeader.textContent = `Recent History (${historyResults.length})`;
     fragment.appendChild(historyHeader);
-    
+
+    const tabCount = getTabCount();
     for (let i = 0; i < historyResults.length; i++) {
       const historyItem = historyResults[i];
-      const itemIndex = filteredTabs.length + i;
+      const itemIndex = tabCount + i;
       const historyElement = createHistoryElement(historyItem, itemIndex);
       fragment.appendChild(historyElement);
     }
   }
-  
-  // Clear and append all at once
+
   tabsList.innerHTML = '';
   tabsList.appendChild(fragment);
 
@@ -744,53 +780,200 @@ async function renderTabs(options = {}) {
     const maxScroll = Math.max(0, tabsList.scrollHeight - tabsList.clientHeight);
     tabsList.scrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
   }
-  
+
   if (!suppressAutoScroll) {
     scrollToSelected();
   }
+}
 
-  if (currentViewMode === 'large') {
-    queueLargePreviewSizing();
+// Get the count of tabs for index calculation
+function getTabCount() {
+  if (treeViewEnabled || groupByWindowEnabled) {
+    // When tree view or group by window is enabled, flattenedTree is populated
+    // (group by window also populates it for correct indexing)
+    return flattenedTree.length > 0 ? flattenedTree.length : filteredTabs.length;
+  }
+  return filteredTabs.length;
+}
+
+// Render tabs as flat list
+function renderFlatList(fragment) {
+  // Reset tree data
+  flattenedTree = [];
+
+  if (filteredTabs.length > 0) {
+    const tabsHeader = document.createElement('div');
+    tabsHeader.className = 'section-header';
+    tabsHeader.textContent = `Open Tabs (${filteredTabs.length})`;
+    fragment.appendChild(tabsHeader);
+  }
+
+  for (let i = 0; i < filteredTabs.length; i++) {
+    const tab = filteredTabs[i];
+    const tabItem = createTabElement(tab, i, 0);
+    fragment.appendChild(tabItem);
   }
 }
 
-// Create a tab element
-function createTabElement(tab, index, isHistory) {
+// Render tabs in tree view with indentation
+function renderTreeView(fragment) {
+  tabTree = buildTabTree(filteredTabs);
+  flattenedTree = flattenTree(tabTree);
+
+  if (flattenedTree.length > 0) {
+    const tabsHeader = document.createElement('div');
+    tabsHeader.className = 'section-header';
+    tabsHeader.textContent = `Open Tabs (${flattenedTree.length})`;
+    fragment.appendChild(tabsHeader);
+  }
+
+  flattenedTree.forEach((node, index) => {
+    const tabItem = createTabElement(node.tab, index, node.depth);
+    fragment.appendChild(tabItem);
+  });
+}
+
+// Render tabs grouped by window
+function renderGroupedByWindow(fragment) {
+  // Group tabs by windowId
+  const windowGroups = new Map();
+
+  filteredTabs.forEach(tab => {
+    if (!windowGroups.has(tab.windowId)) {
+      windowGroups.set(tab.windowId, []);
+    }
+    windowGroups.get(tab.windowId).push(tab);
+  });
+
+  let globalIndex = 0;
+  flattenedTree = [];
+
+  windowGroups.forEach((tabs, windowId) => {
+    // Window header
+    const windowHeader = document.createElement('div');
+    windowHeader.className = 'section-header window-header';
+
+    const windowLabel = document.createElement('span');
+    windowLabel.textContent = `Window (${tabs.length} tabs)`;
+    windowHeader.appendChild(windowLabel);
+
+    // Close button to close all tabs in this window
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'window-close-button';
+    closeBtn.setAttribute('aria-label', 'Close all tabs in this window');
+    closeBtn.title = 'Close all tabs in this window';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const tabIds = tabs.filter(t => !t.pinned).map(t => t.id);
+      if (tabIds.length === 0) return;
+      if (tabIds.length > 3) {
+        const confirmed = confirm(`Close ${tabIds.length} tabs in this window?`);
+        if (!confirmed) return;
+      }
+      await chrome.tabs.remove(tabIds);
+      await refreshTabs();
+    });
+    windowHeader.appendChild(closeBtn);
+
+    fragment.appendChild(windowHeader);
+
+    if (treeViewEnabled) {
+      // Tree within each window
+      const windowTree = buildTabTree(tabs);
+      const flattened = flattenTree(windowTree);
+
+      flattened.forEach(node => {
+        flattenedTree.push(node);
+        node.flatIndex = globalIndex;
+        const tabItem = createTabElement(node.tab, globalIndex++, node.depth);
+        fragment.appendChild(tabItem);
+      });
+    } else {
+      // Flat list within each window - still track in flattenedTree for indexing
+      tabs.forEach(tab => {
+        flattenedTree.push(tab);
+        const tabItem = createTabElement(tab, globalIndex++, 0);
+        fragment.appendChild(tabItem);
+      });
+    }
+  });
+}
+
+// Create a tab element with optional tree depth for indentation
+function createTabElement(tab, index, depth = 0) {
   const tabItem = document.createElement('div');
   tabItem.className = 'tab-item';
   if (index === selectedIndex) {
     tabItem.classList.add('selected');
   }
-  
+  if (selectedTabIds.has(tab.id)) {
+    tabItem.classList.add('checked');
+  }
+
   tabItem.dataset.tabId = tab.id;
   tabItem.dataset.index = index;
+  tabItem.dataset.depth = depth;
 
-  // Only show preview in thumbnail and large modes
-  if (currentViewMode !== 'compact') {
-    const preview = document.createElement('div');
-    preview.className = 'tab-preview';
-    const previewContent = document.createElement('div');
-    previewContent.className = 'tab-preview-content';
-    previewContent.innerHTML = '<div class="preview-loading">📄</div>';
-    preview.appendChild(previewContent);
-    tabItem.appendChild(preview);
-
-    if (currentViewMode === 'thumbnail') {
-      renderThumbnailFavicon(preview, tab);
-    }
+  // Apply indentation for tree view
+  if (depth > 0) {
+    tabItem.style.paddingLeft = `${8 + (depth * 20)}px`;
+    tabItem.classList.add('tree-child');
   }
-  
+
+  // Checkbox/Favicon container
+  const selectWrapper = document.createElement('div');
+  selectWrapper.className = 'tab-select-wrapper';
+
+  // Checkbox
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'tab-checkbox';
+  checkbox.checked = selectedTabIds.has(tab.id);
+  checkbox.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleTabSelection(tab.id, index, e);
+  });
+  checkbox.addEventListener('change', (e) => {
+    e.stopPropagation();
+  });
+  selectWrapper.appendChild(checkbox);
+
+  // Favicon
+  const faviconWrapper = document.createElement('div');
+  faviconWrapper.className = 'tab-favicon';
+
+  if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
+    const faviconImg = document.createElement('img');
+    faviconImg.src = tab.favIconUrl;
+    faviconImg.alt = '';
+    faviconImg.referrerPolicy = 'no-referrer';
+    faviconImg.onerror = () => {
+      faviconWrapper.classList.add('fallback');
+      faviconWrapper.textContent = '🌐';
+      faviconImg.remove();
+    };
+    faviconWrapper.appendChild(faviconImg);
+  } else {
+    faviconWrapper.classList.add('fallback');
+    faviconWrapper.textContent = '🌐';
+  }
+
+  selectWrapper.appendChild(faviconWrapper);
+  tabItem.appendChild(selectWrapper);
+
   // Tab info
   const info = document.createElement('div');
   info.className = 'tab-info';
-  
+
   const title = document.createElement('div');
   title.className = 'tab-title';
   title.textContent = tab.title || 'Untitled';
-  
+
   const urlRow = document.createElement('div');
   urlRow.className = 'tab-url-row';
-  
+
   const url = document.createElement('div');
   url.className = 'tab-url';
   url.textContent = tab.url || '';
@@ -803,32 +986,9 @@ function createTabElement(tab, index, isHistory) {
     lastSeen.textContent = lastSeenText;
     urlRow.appendChild(lastSeen);
   }
-  
+
   info.appendChild(title);
   info.appendChild(urlRow);
-
-  if (currentViewMode === 'compact') {
-    const faviconWrapper = document.createElement('div');
-    faviconWrapper.className = 'tab-favicon';
-
-    if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
-      const faviconImg = document.createElement('img');
-      faviconImg.src = tab.favIconUrl;
-      faviconImg.alt = '';
-      faviconImg.referrerPolicy = 'no-referrer';
-      faviconImg.onerror = () => {
-        faviconWrapper.classList.add('fallback');
-        faviconWrapper.textContent = '🌐';
-        faviconImg.remove();
-      };
-      faviconWrapper.appendChild(faviconImg);
-    } else {
-      faviconWrapper.classList.add('fallback');
-      faviconWrapper.textContent = '🌐';
-    }
-
-    tabItem.appendChild(faviconWrapper);
-  }
 
   tabItem.appendChild(info);
 
@@ -872,32 +1032,27 @@ function createHistoryElement(historyItem, index) {
   if (index === selectedIndex) {
     item.classList.add('selected');
   }
-  
+
   item.dataset.index = index;
   item.dataset.historyUrl = historyItem.url;
 
-  // Show preview placeholder or favicon
-  if (currentViewMode !== 'compact') {
-    const preview = document.createElement('div');
-    preview.className = 'tab-preview';
-    const previewContent = document.createElement('div');
-    previewContent.className = 'tab-preview-content';
-    previewContent.innerHTML = '<div class="preview-placeholder">🕒</div>';
-    preview.appendChild(previewContent);
-    item.appendChild(preview);
-  }
-  
+  // History icon
+  const faviconWrapper = document.createElement('div');
+  faviconWrapper.className = 'tab-favicon fallback';
+  faviconWrapper.textContent = '🕒';
+  item.appendChild(faviconWrapper);
+
   // History info
   const info = document.createElement('div');
   info.className = 'tab-info';
-  
+
   const title = document.createElement('div');
   title.className = 'tab-title';
   title.textContent = historyItem.title || 'Untitled';
-  
+
   const urlRow = document.createElement('div');
   urlRow.className = 'tab-url-row';
-  
+
   const url = document.createElement('div');
   url.className = 'tab-url';
   url.textContent = historyItem.url || '';
@@ -910,7 +1065,7 @@ function createHistoryElement(historyItem, index) {
     lastSeen.textContent = lastSeenText;
     urlRow.appendChild(lastSeen);
   }
-  
+
   info.appendChild(title);
   info.appendChild(urlRow);
   item.appendChild(info);
@@ -1032,68 +1187,49 @@ function setSortMode(mode, options = {}) {
 
 // Navigate selection
 function moveSelection(direction) {
-  const totalItems = filteredTabs.length + historyResults.length;
-  console.log('moveSelection called:', { direction, selectedIndex, totalItems });
-  
+  const tabCount = getTabCount();
+  const totalItems = tabCount + historyResults.length;
+
   if (totalItems === 0) return;
-  
+
   selectedIndex += direction;
-  
+
   if (selectedIndex < 0) {
     selectedIndex = 0;
   } else if (selectedIndex >= totalItems) {
     selectedIndex = totalItems - 1;
   }
-  
-  console.log('New selectedIndex:', selectedIndex);
+
   updateSelection();
 }
 
 function updateSelection() {
   const items = tabsList.querySelectorAll('.tab-item');
-  
-  console.log('updateSelection called:', { selectedIndex, itemsCount: items.length });
-  
+
   items.forEach((item, index) => {
     if (index === selectedIndex) {
       item.classList.add('selected');
-      console.log('Added selected to item', index, item);
     } else {
       item.classList.remove('selected');
     }
   });
-  
+
   scrollToSelected();
 }
 
 function scrollToSelected() {
   const selected = tabsList.querySelector('.tab-item.selected');
-  console.log('scrollToSelected:', { selected, hasSelected: !!selected });
-  
+
   if (selected) {
-    console.log('Scrolling to:', selected);
-    
-    // Use scrollIntoView
     selected.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    
-    // Alternative: manual scroll calculation as fallback
+
     const listRect = tabsList.getBoundingClientRect();
     const itemRect = selected.getBoundingClientRect();
-    
-    console.log('Scroll positions:', {
-      listTop: listRect.top,
-      listBottom: listRect.bottom,
-      itemTop: itemRect.top,
-      itemBottom: itemRect.bottom
-    });
-    
-    // Check if item is outside viewport
+
     if (itemRect.top < listRect.top || itemRect.bottom > listRect.bottom) {
       const scrollOffset = itemRect.top - listRect.top - (listRect.height / 2) + (itemRect.height / 2);
       tabsList.scrollBy({ top: scrollOffset, behavior: 'smooth' });
     }
-  } else {
-    console.warn('No selected item found for scrolling');
   }
 }
 
@@ -1188,11 +1324,19 @@ function applySortOrder() {
 function setupEventListeners() {
   // Search input
   searchInput.addEventListener('input', filterTabs);
-  
-  // View mode buttons
-  viewCompactBtn.addEventListener('click', () => setViewMode('compact'));
-  viewThumbnailBtn.addEventListener('click', () => setViewMode('thumbnail'));
-  viewLargeBtn.addEventListener('click', () => setViewMode('large'));
+
+  // Theme toggle
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener('click', toggleTheme);
+  }
+
+  // Tree view toggles
+  viewFlatBtn.addEventListener('click', () => setTreeView(false));
+  viewTreeBtn.addEventListener('click', () => setTreeView(true));
+
+  // Group by window toggles
+  groupOffBtn.addEventListener('click', () => setGroupByWindow(false));
+  groupByWindowBtn.addEventListener('click', () => setGroupByWindow(true));
 
   if (displayModePopupBtn) {
     displayModePopupBtn.addEventListener('click', () => setDisplayMode('popup'));
@@ -1201,7 +1345,7 @@ function setupEventListeners() {
   if (displayModeOverlayBtn) {
     displayModeOverlayBtn.addEventListener('click', () => setDisplayMode('overlay'));
   }
-  
+
   // Keyboard navigation - single handler for all keys
   document.addEventListener('keydown', async (e) => {
     // Debug mode toggle (Ctrl/Cmd + D)
@@ -1212,11 +1356,11 @@ function setupEventListeners() {
       renderTabs();
       return;
     }
-    
+
     // Handle navigation
     await handleKeyPress(e);
   });
-  
+
   // Sort buttons
   sortByUrlBtn.addEventListener('click', () => setSortMode('url'));
   sortByTitleBtn.addEventListener('click', () => setSortMode('title'));
@@ -1235,65 +1379,75 @@ function setupEventListeners() {
       setHistoryResultsLimit(limit);
     });
   });
-  
+
   // Action buttons
   copyAllBtn.addEventListener('click', copyAllUrls);
   moveAllBtn.addEventListener('click', moveAllFilteredTabs);
   closeAllBtn.addEventListener('click', closeAllFilteredTabs);
 }
 
+// Get tab at current selection index (handles tree mode and group by window)
+function getTabAtIndex(index) {
+  if ((treeViewEnabled || groupByWindowEnabled) && flattenedTree.length > 0) {
+    const node = flattenedTree[index];
+    return node?.tab || node;
+  }
+  return filteredTabs[index];
+}
+
 // Handle keyboard navigation
 async function handleKeyPress(e) {
-  const totalItems = filteredTabs.length + historyResults.length;
+  const tabCount = getTabCount();
+  const totalItems = tabCount + historyResults.length;
   if (totalItems === 0) return;
-  
+
   // Don't handle arrow keys if user is typing in search (except for escape)
   if (document.activeElement === searchInput && e.key !== 'Escape') {
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) {
       return;
     }
   }
-  
+
   switch (e.key) {
     case 'ArrowDown':
       e.preventDefault();
       moveSelection(1);
       break;
-      
+
     case 'ArrowUp':
       e.preventDefault();
       moveSelection(-1);
       break;
-      
+
     case 'ArrowLeft':
       e.preventDefault();
       // Only close tabs, not history items
-      if (selectedIndex < filteredTabs.length) {
-        const tabToClose = filteredTabs[selectedIndex];
+      if (selectedIndex < tabCount) {
+        const tabToClose = getTabAtIndex(selectedIndex);
         if (tabToClose) {
           await closeTab(tabToClose.id);
         }
       }
       break;
-      
+
     case 'ArrowRight':
     case 'Enter':
       e.preventDefault();
-      if (selectedIndex < filteredTabs.length) {
+      if (selectedIndex < tabCount) {
         // Switch to tab
-        const tabToSwitch = filteredTabs[selectedIndex];
+        const tabToSwitch = getTabAtIndex(selectedIndex);
         if (tabToSwitch) {
           await switchToTab(tabToSwitch.id);
         }
       } else {
         // Open history item
-        const historyIndex = selectedIndex - filteredTabs.length;
+        const historyIndex = selectedIndex - tabCount;
         if (historyIndex < historyResults.length) {
           await openHistoryItem(historyResults[historyIndex].url);
         }
       }
       break;
-      
+
     case 'Escape':
       e.preventDefault();
       closeUI();
@@ -1303,15 +1457,23 @@ async function handleKeyPress(e) {
 
 // Start the extension
 init();
-function focusSearchInput() {
-  if (document.activeElement === searchInput) {
-    return;
-  }
 
-  if (searchInput) {
+function focusSearchInput() {
+  if (!searchInput) return;
+
+  // Use requestAnimationFrame to ensure DOM is ready
+  requestAnimationFrame(() => {
     searchInput.focus({ preventScroll: true });
     searchInput.select();
-  }
+
+    // Fallback: try again after a short delay if focus didn't stick
+    setTimeout(() => {
+      if (document.activeElement !== searchInput) {
+        searchInput.focus({ preventScroll: true });
+        searchInput.select();
+      }
+    }, 50);
+  });
 }
 
 function setHistoryRange(range, options = {}) {

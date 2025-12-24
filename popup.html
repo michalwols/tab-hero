@@ -10,21 +10,20 @@
   <div class="container">
     <div class="header">
       <div class="search-box">
-        <input 
-          type="text" 
-          id="searchInput" 
-          placeholder="Search tabs..." 
+        <input
+          type="text"
+          id="searchInput"
+          placeholder="Search tabs..."
           autofocus
         >
       </div>
-      <div class="view-mode-toggle">
-        <button id="viewCompact" class="view-btn" title="Compact List">☰</button>
-        <button id="viewThumbnail" class="view-btn" title="Thumbnail List">⊞</button>
-        <button id="viewLarge" class="view-btn active" title="Large Preview">▦</button>
-      </div>
+      <button id="themeToggle" class="theme-toggle" title="Toggle dark mode" type="button">
+        <span class="theme-icon-light">&#9790;</span>
+        <span class="theme-icon-dark" style="display:none;">&#9728;</span>
+      </button>
     </div>
     
-    <div class="tabs-list view-large" id="tabsList">
+    <div class="tabs-list view-compact" id="tabsList">
       <!-- Tabs will be dynamically inserted here -->
     </div>
     
@@ -33,6 +32,14 @@
         <button id="copyAllBtn" class="footer-btn action-btn" title="Copy all filtered tabs as markdown">Copy</button>
         <button id="moveAllBtn" class="footer-btn action-btn" title="Move all filtered tabs to a new window">New Window</button>
         <button id="closeAllBtn" class="footer-btn action-btn danger-btn" title="Close all filtered tabs">Close</button>
+        <div class="toggle-group" title="Toggle tree view">
+          <button id="viewFlat" class="toggle-btn active" type="button">Flat</button>
+          <button id="viewTree" class="toggle-btn" type="button">Tree</button>
+        </div>
+        <div class="toggle-group" title="Group tabs by window">
+          <button id="groupOff" class="toggle-btn active" type="button">All</button>
+          <button id="groupByWindow" class="toggle-btn" type="button">Windows</button>
+        </div>
       </div>
       <div class="footer-right">
         <div class="toggle-group" title="Change sort order">
